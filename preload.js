@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('tav', {
   onPcm: (cb) => listen('tav:pcm', cb),
   onAudioEnded: (cb) => listen('tav:audio-ended', cb),
   version: () => ipcRenderer.invoke('tav:version'),
+  hardware: () => ipcRenderer.invoke('tav:hardware'),
   onSplash: (cb) => listen('tav:splash', cb),
   onUpdateReady: (cb) => listen('tav:update-ready', cb),
   restartToUpdate: () => ipcRenderer.send('tav:restart-update'),

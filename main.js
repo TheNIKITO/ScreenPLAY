@@ -1,6 +1,7 @@
 const { app, BrowserWindow, Menu, desktopCapturer, ipcMain, powerSaveBlocker, screen, session } = require('electron');
 const { spawn } = require('child_process');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { autoUpdater } = require('electron-updater');
 
@@ -202,8 +203,28 @@ function notifyUpdateReady() {
 }
 
 // ---------------- ponte com a página ----------------
+// Marca do processador e da placa de vídeo (Intel / AMD / NVIDIA), para a caixa de codificador.
+let hardwareCache = null;
+async function hardwareInfo() {
+  if (hardwareCache) return hardwareCache;
+  const cpuModel = (os.cpus()[0] || {}).model || '';
+  const cpu = /intel/i.test(cpuModel) ? 'Intel' : /\bamd\b|ryzen|athlon/i.test(cpuModel) ? 'AMD' : '';
+  let gpu = '';
+  try {
+    const info = await app.getGPUInfo('basic');
+    const devices = (info && info.gpuDevice) || [];
+    const dev = devices.find((d) => d.active) || devices[0];
+    if (dev) gpu = { 0x10de: 'NVIDIA', 0x1002: 'AMD', 0x1022: 'AMD', 0x8086: 'Intel' }[dev.vendorId] || '';
+  } catch (err) {
+    console.warn('[hardware]', err && err.message);
+  }
+  hardwareCache = { cpu, gpu };
+  return hardwareCache;
+}
+
 function registerIpc() {
   ipcMain.handle('tav:version', () => app.getVersion());
+  ipcMain.handle('tav:hardware', () => hardwareInfo());
 
   ipcMain.on('tav:restart-update', () => {
     if (readyVersion) autoUpdater.quitAndInstall(true, true);

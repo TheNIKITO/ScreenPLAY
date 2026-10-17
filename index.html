@@ -21,6 +21,10 @@
     --accent-2: #d4d4d4;
     --on-accent: #0a0a0a;
     --live: #ff4d5e;
+    /* Estado da conexão / ping */
+    --good: #3ba55d;
+    --warn: #f0b232;
+    --bad: #ed4245;
     --radius: 12px;
   }
   * { box-sizing: border-box; }
@@ -111,6 +115,7 @@
   .side {
     background: var(--panel); border-right: 1px solid var(--line); padding: 16px;
     display: flex; flex-direction: column; gap: 14px; overflow-y: auto; min-height: 0;
+    scrollbar-width: thin; scrollbar-color: #2e2e2e transparent;
   }
   .box { background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; }
   .label { font-size: 11.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: 8px; font-weight: 600; }
@@ -118,8 +123,26 @@
   .code { font-size: 26px; font-weight: 800; letter-spacing: .16em; font-variant-numeric: tabular-nums; user-select: text; }
   .status { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); margin-top: 10px; }
   .status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
-  .status.ok::before { background: var(--text); box-shadow: 0 0 0 3px rgba(255, 255, 255, .12); }
-  .status.bad::before { background: var(--live); }
+  .status.ok::before { background: var(--good); box-shadow: 0 0 0 3px rgba(59, 165, 93, .2); }
+  .status.bad::before { background: var(--bad); box-shadow: 0 0 0 3px rgba(237, 66, 69, .2); }
+  .status.warn::before { background: var(--warn); box-shadow: 0 0 0 3px rgba(240, 178, 50, .2); }
+
+  /* Ícone de sinal com o ping (passe o mouse para ver os números) */
+  .people-head { display: flex; align-items: center; justify-content: space-between; }
+  .ping { position: relative; display: inline-flex; padding: 2px; color: var(--faint); cursor: default; }
+  .ping rect { fill: currentColor; opacity: .28; transition: opacity .2s; }
+  .ping rect.on { opacity: 1; }
+  .ping.good { color: var(--good); }
+  .ping.warn { color: var(--warn); }
+  .ping.bad { color: var(--bad); }
+  .ping::after {
+    content: attr(data-tip); position: absolute; right: -4px; top: calc(100% + 8px); z-index: 30;
+    padding: 7px 10px; border-radius: 8px; background: var(--panel-3); border: 1px solid var(--line-2);
+    color: var(--text); font-size: 12.5px; font-weight: 600; line-height: 1.5;
+    text-transform: none; letter-spacing: 0; white-space: pre; box-shadow: 0 10px 24px rgba(0, 0, 0, .45);
+    opacity: 0; transform: translateY(-3px); pointer-events: none; transition: opacity .12s, transform .12s;
+  }
+  .ping:hover::after { opacity: 1; transform: none; }
   .check { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 12px; cursor: pointer; font-size: 14px; }
   .check input { margin: 3px 0 0; accent-color: var(--accent); width: 16px; height: 16px; flex: none; }
   .check small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }  #qualitySel, #encoderSel { margin-bottom: 12px; padding: 9px 10px; }
@@ -131,7 +154,8 @@
     position: absolute; left: 6px; top: 6px; font-size: 11px; font-weight: 700;
     background: rgba(0, 0, 0, .65); padding: 2px 7px; border-radius: 999px;
   }
-  .people-box { flex: 1; min-height: 120px; }
+  .people-box { flex: 1 0 auto; min-height: 120px; }   /* cresce com a lista (não passa por cima do "Sair") */
+  .side > .btn.danger { flex: none; }
   #people { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
   #people li { display: flex; align-items: center; gap: 10px; padding: 6px 2px; }
   .av {
@@ -158,7 +182,7 @@
   .tile-bar {
     position: absolute; left: 0; right: 0; bottom: 0; display: flex; align-items: center; gap: 10px;
     padding: 22px 12px 10px; background: linear-gradient(transparent, rgba(0, 0, 0, .8));
-    transition: opacity .25s;
+    transition: opacity .25s; z-index: 6;
   }
   .tile.idle .tile-bar { opacity: 0; }
   .tile.idle { cursor: none; }
@@ -177,7 +201,42 @@
   }
   .spin { width: 28px; height: 28px; border-radius: 50%; border: 3px solid var(--line-2); border-top-color: var(--text); animation: spin 0.9s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  .unmute { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); background: rgba(0, 0, 0, .75); border-color: rgba(255, 255, 255, .25); }
+  .unmute { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); background: rgba(0, 0, 0, .75); border-color: rgba(255, 255, 255, .25); z-index: 6; }
+
+  /* Cartão "Assistir" de quem está transmitindo (você escolhe quem assistir) */
+  .card-stream {
+    display: grid; place-items: center;
+    background: radial-gradient(420px 240px at 50% 40%, rgba(255, 255, 255, .06), transparent 70%), #0d0d0d;
+  }
+  .cs { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 20px; text-align: center; }
+  .cs svg { color: #3a3a3a; }
+  .cs-name { font-size: 18px; font-weight: 700; }
+  .cs-meta { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+  .cs .btn { min-width: 150px; margin-top: 4px; }
+
+  /* Reações */
+  .reacts { display: flex; gap: 1px; }
+  .reacts button {
+    width: 30px; height: 30px; padding: 0; border: 0; border-radius: 8px; background: transparent;
+    font-size: 17px; line-height: 1; cursor: pointer; transition: transform .12s, background .12s;
+  }
+  .reacts button:hover { background: rgba(255, 255, 255, .15); transform: scale(1.18); }
+  .react-layer { position: absolute; inset: 0; pointer-events: none; overflow: hidden; z-index: 5; }
+  .react {
+    position: absolute; bottom: 70px; display: flex; flex-direction: column; align-items: center;
+    animation: float-up 2.8s ease-out forwards;
+  }
+  .react .emoji { font-size: 36px; line-height: 1; filter: drop-shadow(0 2px 6px rgba(0, 0, 0, .55)); }
+  .react .who {
+    margin-top: 4px; padding: 1px 7px; border-radius: 999px; background: rgba(0, 0, 0, .65);
+    font-size: 11px; font-weight: 700; white-space: nowrap;
+  }
+  @keyframes float-up {
+    0% { transform: translateY(24px) scale(.6); opacity: 0; }
+    12% { transform: translateY(0) scale(1.12); opacity: 1; }
+    70% { opacity: 1; }
+    100% { transform: translateY(-220px) scale(1); opacity: 0; }
+  }
 
   /* ---------- Seletor de tela/janela ---------- */
   .modal {
@@ -291,8 +350,8 @@
         <option value="1080-60">1080p · 60 fps (jogos e vídeos)</option>
       </select>
       <select id="encoderSel" aria-label="Codificador de vídeo">
-        <option value="gpu" selected>Vídeo pela placa (GPU)</option>
-        <option value="cpu">Vídeo pelo processador (CPU)</option>
+        <option value="gpu" selected>H.264 · Placa de vídeo</option>
+        <option value="cpu">VP8 · Processador</option>
       </select>
       <button id="shareBtn" class="btn primary wide" type="button">Transmitir minha tela</button>
       <p id="shareHint" class="hint"></p>
@@ -303,7 +362,12 @@
     </section>
 
     <section class="box people-box">
-      <div class="label">Na sala (<span id="count">0</span>)</div>
+      <div class="label people-head">
+        <span>Na sala (<span id="count">0</span>)</span>
+        <span id="pingBadge" class="ping" data-tip="Medindo ping…" aria-label="Ping">
+          <svg viewBox="0 0 20 16" width="18" height="14" aria-hidden="true"><rect x="1" y="11" width="3" height="4" rx="1"/><rect x="6" y="8" width="3" height="7" rx="1"/><rect x="11" y="5" width="3" height="10" rx="1"/><rect x="16" y="2" width="3" height="13" rx="1"/></svg>
+        </span>
+      </div>
       <ul id="people"></ul>
     </section>
 
@@ -314,11 +378,12 @@
     <div id="empty" class="empty">
       <div>
         <svg viewBox="0 0 24 24" width="56" height="56" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
-        <strong>Ninguém está transmitindo agora</strong>
-        Quando alguém da sala transmitir, a tela aparece aqui.
+        <strong id="emptyTitle">Ninguém está transmitindo agora</strong>
+        <span id="emptyText">Quando alguém da sala transmitir, a tela aparece aqui.</span>
       </div>
     </div>
     <div id="grid" class="grid"></div>
+    <div id="reactLayer" class="react-layer"></div>
   </main>
 </div>
 

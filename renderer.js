@@ -1,9 +1,9 @@
 'use strict';
 
 // Prefixo dos IDs no servidor público de sinalização do PeerJS (evita colidir com outros apps).
-// Se um dia a conversa entre os apps mudar de um jeito incompatível, troque o "v1" — versões
-// antigas deixam de achar as salas novas (e a atualização automática resolve isso ao abrir).
-const PREFIX = 'screenplay-v1-';
+// Mudou para v2 quando a sala passou a sobreviver à saída do dono e a ter "clique para assistir":
+// versões antigas não acham as salas novas (e a atualização automática resolve isso ao abrir).
+const PREFIX = 'screenplay-v2-';
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 // hint 'detail' = segura a resolução. ('motion' derrubava 1080p60 para 640x360 enquanto a banda subia.)
 const QUALITY = {
@@ -11,32 +11,50 @@ const QUALITY = {
   '1080-30': { w: 1920, h: 1080, fps: 30, bitrate: 6000000,  hint: 'detail' },
   '1080-60': { w: 1920, h: 1080, fps: 60, bitrate: 10000000, hint: 'detail' },
 };
+const REACTIONS = ['😂', '🔥', '👍', '😮', '❤️'];
 const ICON = {
-  vol:  '<path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M19 5a10 10 0 0 1 0 14"/>',
-  mute: '<path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="m22 9-6 6M16 9l6 6"/>',
-  fs:   '<path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/>',
+  vol:    '<path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M19 5a10 10 0 0 1 0 14"/>',
+  mute:   '<path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="m22 9-6 6M16 9l6 6"/>',
+  fs:     '<path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/>',
+  close:  '<path d="M18 6 6 18M6 6l12 12"/>',
+  screen: '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>',
 };
 const svg = (paths, size = 18) =>
   `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
 
 const $ = (id) => document.getElementById(id);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const IS_APP = !!window.tav;   // rodando dentro do app de Windows (Electron)
 const canShare = IS_APP ||
   (!!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) && window.isSecureContext);
 
+// Como a sala funciona:
+//  - Cada pessoa é um "participante" (um Peer com ID <prefixo><código>-<aleatório>).
+//  - O "dono" roda, além disso, o papel de SALA: um segundo Peer com o ID <prefixo><código>, que
+//    guarda a lista de quem está na sala e repassa recados. Todo mundo (inclusive o dono) se conecta
+//    a esse Peer da sala.
+//  - Se o dono sai, a conexão com a sala cai e o próximo da lista (por ordem de chegada) assume o
+//    papel de sala com o mesmo código. As transmissões vão direto de um participante pro outro,
+//    então continuam funcionando durante a troca.
 const S = {
-  peer: null, myId: '', myName: '', code: '', isHost: false,
+  peer: null, myId: '', myName: '', code: '',
   busy: false, leaving: false, joining: null,
-  hostConn: null,         // convidado -> anfitrião
-  conns: new Map(),       // anfitrião: id -> DataConnection
-  roster: new Map(),      // anfitrião: lista oficial da sala
-  view: new Map(),        // todos: última lista recebida
+  room: null,             // { peer, conns, roster, order, rebuildUntil, timer } — só no PC do dono
+  roomConn: null,         // minha conexão com a sala
+  ownerId: '',            // participante que é o dono agora
+  lostOwner: '',          // dono que acabou de sair (durante a troca)
+  migrating: false,
+  view: new Map(),        // id -> { name, sharing, seq, audio, order }
   viewReady: false,
   localStream: null, seq: 0, quality: QUALITY['1080-30'],
   audioMode: 'none',      // 'system' (PC sem Discord) | 'app' (só a janela) | 'loopback' (PC inteiro) | 'none'
-  watchers: new Set(),    // quem já está assistindo minha transmissão atual
+  wanted: new Set(),      // quem pediu para assistir minha transmissão atual
+  watchers: new Set(),    // quem já está vendo de fato (conexão aberta)
+  watching: new Map(),    // id -> seq das transmissões que EU escolhi assistir
   encoder: 'gpu',         // escolha: 'gpu' (placa de vídeo, H.264) | 'cpu' (processador, VP8)
   encoderUsed: null,      // o que o navegador realmente está usando: 'gpu' | 'cpu'
+  hw: { cpu: '', gpu: '' },   // marcas detectadas (Intel / AMD / NVIDIA)
+  pings: new Map(),       // id -> ping em ms (conexões diretas que eu tenho com cada pessoa)
   outCalls: new Map(),    // id -> { call, seq }  (quem está recebendo minha tela)
   tiles: new Map(),       // id -> tile  (telas que estou assistindo)
 };
@@ -48,8 +66,9 @@ function randCode(n) {
 }
 const normCode = (v) => String(v || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
 const cleanName = (v) => String(v || '').replace(/\s+/g, ' ').trim().slice(0, 24) || 'Anônimo';
-const hostId = () => PREFIX + S.code;
+const roomId = () => PREFIX + S.code;
 const nameOf = (id) => (S.view.get(id) || {}).name || 'Alguém';
+const hasAudio = () => !!(S.localStream && S.localStream.getAudioTracks().length);
 function colorOf(id) {
   let h = 0;
   for (const c of id) h = (h * 31 + c.charCodeAt(0)) >>> 0;
@@ -246,29 +265,42 @@ function openPeer(id) {
       if (!opened) { peer.destroy(); reject({ type: 'timeout' }); }
     }, 15000);
     peer.on('open', () => {
-      if (!opened) {
-        opened = true; clearTimeout(timer); S.peer = peer; resolve(peer);
-      } else if (S.peer === peer) {
-        setNet('Conectado', 'ok');      // reconectou ao servidor
-        syncCalls();
-      }
+      if (opened) return;
+      opened = true;
+      clearTimeout(timer);
+      resolve(peer);
     });
     peer.on('error', (err) => {
-      if (!opened) { clearTimeout(timer); peer.destroy(); reject(err); return; }
-      onPeerError(err);
+      if (opened) return;
+      clearTimeout(timer);
+      peer.destroy();
+      reject(err);
     });
+    // Caiu a ligação com o servidor de sinalização: reconecta (as conexões diretas continuam).
     peer.on('disconnected', () => {
-      if (S.leaving || S.peer !== peer || peer.destroyed) return;
-      setNet('Reconectando ao servidor…', 'bad');
       setTimeout(() => { if (!peer.destroyed && peer.disconnected) peer.reconnect(); }, 1500);
     });
-    peer.on('call', onIncomingCall);
+  });
+}
+
+function setupParticipant(peer) {
+  S.peer = peer;
+  S.myId = peer.id;
+  peer.on('error', (err) => { if (S.peer === peer) onPeerError(err); });
+  peer.on('call', onIncomingCall);
+  peer.on('disconnected', () => {
+    if (S.peer === peer && !S.leaving) setNet('Reconectando ao servidor…', 'bad');
+  });
+  peer.on('open', () => {   // de novo = reconectou ao servidor
+    if (S.peer !== peer) return;
+    if (S.roomConn) setNet('Conectado', 'ok');
+    syncCalls();
   });
 }
 
 function onPeerError(err) {
   if (err.type === 'peer-unavailable') {
-    if (S.joining) S.joining.fail('Sala não encontrada. Confira o código (ou a sala já foi fechada).');
+    if (S.joining) S.joining.fail();
     return;   // fora isso: alguém saiu enquanto eu ligava pra ele — normal
   }
   if (['network', 'server-error', 'socket-error', 'socket-closed', 'disconnected'].includes(err.type)) {
@@ -278,30 +310,221 @@ function onPeerError(err) {
   console.warn('[peer]', err.type, err);
 }
 
+// ---------------- papel de "sala" (roda no PC do dono) ----------------
+async function startHosting(code, rebuilding) {
+  const peer = await openPeer(PREFIX + code);
+  const room = { peer, conns: new Map(), roster: new Map(), order: 0, rebuildUntil: 0, timer: null };
+  peer.on('connection', (conn) => roomAccept(room, conn));
+  peer.on('error', (err) => console.warn('[sala]', err.type));
+  if (rebuilding) {
+    // Durante a troca de dono, a lista ainda está sendo remontada: os outros não removem ninguém.
+    room.rebuildUntil = Date.now() + 6000;
+    room.timer = setTimeout(() => roomBroadcast(room), 6200);
+  }
+  S.room = room;
+  return room;
+}
+
+function stopHosting() {
+  const room = S.room;
+  S.room = null;
+  if (!room) return;
+  clearTimeout(room.timer);
+  try { room.peer.destroy(); } catch {}
+}
+
+function roomAccept(room, conn) {
+  if (!conn.peer.startsWith(roomId() + '-')) { conn.close(); return; }
+  const pid = conn.peer;
+  conn.on('data', (msg) => {
+    if (S.room !== room || !msg || typeof msg !== 'object') return;
+    if (msg.t === 'hello') {
+      room.conns.set(pid, conn);
+      let order = Number(msg.order) || 0;
+      if (order > 0) room.order = Math.max(room.order, order);
+      else order = ++room.order;
+      room.roster.set(pid, {
+        name: cleanName(msg.name), sharing: !!msg.sharing, seq: Number(msg.seq) || 0, audio: !!msg.audio, order,
+      });
+      roomBroadcast(room);
+    } else if (msg.t === 'state') {
+      const p = room.roster.get(pid);
+      if (!p) return;
+      p.sharing = !!msg.sharing;
+      p.seq = Number(msg.seq) || 0;
+      p.audio = !!msg.audio;
+      roomBroadcast(room);
+    } else if (msg.t === 'relay' && typeof msg.to === 'string') {
+      const target = room.conns.get(msg.to);
+      if (target && target.open) { try { target.send({ t: 'relayed', from: pid, msg: msg.msg }); } catch {} }
+    } else if (msg.t === 'cast') {
+      for (const [id, c] of room.conns) {
+        if (id !== pid && c.open) { try { c.send({ t: 'relayed', from: pid, msg: msg.msg }); } catch {} }
+      }
+    }
+  });
+  const drop = () => {
+    if (room.conns.get(pid) !== conn) return;
+    room.conns.delete(pid);
+    if (room.roster.delete(pid)) roomBroadcast(room);
+  };
+  conn.on('close', drop);
+  conn.on('error', drop);
+}
+
+function roomBroadcast(room) {
+  if (S.room !== room) return;
+  const list = [...room.roster].map(([id, p]) => ({ id, ...p })).sort((a, b) => a.order - b.order);
+  const msg = { t: 'roster', list, owner: S.myId, merge: Date.now() < room.rebuildUntil };
+  for (const c of room.conns.values()) {
+    if (c.open) { try { c.send(msg); } catch {} }
+  }
+}
+
+// ---------------- eu (participante) <-> sala ----------------
+function connectRoom(timeoutMs) {
+  return new Promise((resolve) => {
+    if (!S.peer || S.peer.destroyed) return resolve({ error: 'offline' });
+    let conn;
+    try { conn = S.peer.connect(roomId(), { reliable: true, serialization: 'json' }); } catch { conn = null; }
+    if (!conn) return resolve({ error: 'offline' });
+    let done = false;
+    const hook = { fail: () => finish({ error: 'missing' }) };
+    const timer = setTimeout(() => finish({ error: 'timeout' }), timeoutMs);
+    function finish(result) {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      if (S.joining === hook) S.joining = null;
+      if (!result.conn) { try { conn.close(); } catch {} }
+      resolve(result);
+    }
+    S.joining = hook;
+    conn.on('open', () => finish({ conn }));
+    conn.on('error', () => finish({ error: 'error' }));
+  });
+}
+
+function attachRoom(conn) {
+  S.roomConn = conn;
+  conn.on('data', onRoomMessage);
+  conn.on('close', () => onRoomLost(conn));
+  conn.on('error', () => onRoomLost(conn));
+  const me = S.view.get(S.myId);
+  conn.send({
+    t: 'hello', name: S.myName, order: me && me.order ? me.order : undefined,
+    sharing: !!S.localStream, seq: S.seq, audio: hasAudio(),
+  });
+  if (S.code && !$('room').classList.contains('hidden')) setNet('Conectado', 'ok');
+}
+
+function onRoomMessage(msg) {
+  if (!msg || typeof msg !== 'object') return;
+  if (msg.t === 'roster' && Array.isArray(msg.list)) applyRoster(msg.list, msg.owner, !!msg.merge);
+  else if (msg.t === 'relayed' && typeof msg.from === 'string' && msg.msg && typeof msg.msg === 'object') onRelayed(msg.from, msg.msg);
+}
+
+function sendRoom(msg) {
+  if (!S.roomConn || !S.roomConn.open) return false;
+  try { S.roomConn.send(msg); return true; } catch { return false; }
+}
+const relay = (to, msg) => sendRoom({ t: 'relay', to, msg });
+const cast = (msg) => sendRoom({ t: 'cast', msg });
+function sendState() {
+  sendRoom({ t: 'state', sharing: !!S.localStream, seq: S.seq, audio: hasAudio() });
+}
+
+// A conexão com a sala caiu: o dono saiu (ou a internet piscou). Alguém assume a sala.
+function onRoomLost(conn) {
+  if (S.leaving || S.roomConn !== conn) return;
+  S.roomConn = null;
+  S.lostOwner = S.ownerId;
+  setNet('Reconectando à sala…', 'warn');
+  migrate();
+}
+
+async function migrate() {
+  if (S.migrating) return;
+  S.migrating = true;
+  // Quem assume primeiro: o próximo da lista por ordem de chegada (sem o dono que saiu).
+  const order = [...S.view]
+    .filter(([id]) => id !== S.lostOwner)
+    .sort((a, b) => (a[1].order || 0) - (b[1].order || 0))
+    .map(([id]) => id);
+  const myTurn = Math.max(0, order.indexOf(S.myId));
+  const deadline = Date.now() + 75000;
+  for (let attempt = 0; !S.leaving && S.peer && Date.now() < deadline; attempt++) {
+    // A sala já voltou (com outro dono, ou era só a internet)? Entra nela.
+    if (!(attempt === 0 && myTurn === 0)) {
+      const r = await connectRoom(4000);
+      if (S.leaving) break;
+      if (r.conn) { attachRoom(r.conn); S.migrating = false; return; }
+    }
+    // Na minha vez (ou se ninguém assumiu ainda), eu assumo a sala.
+    if (attempt >= myTurn && !S.room) {
+      try {
+        await startHosting(S.code, true);
+        const r = await connectRoom(6000);
+        if (r.conn) { attachRoom(r.conn); S.migrating = false; return; }
+        stopHosting();
+      } catch { /* outra pessoa assumiu primeiro (ou o código antigo ainda está preso) */ }
+    }
+    await sleep(1500);
+  }
+  S.migrating = false;
+  if (!S.leaving && S.peer) leaveRoom('A sala caiu e não deu para reconectar.');
+}
+
 // ---------------- criar / entrar / sair ----------------
+async function joinAsParticipant() {
+  let peer;
+  try {
+    peer = await openPeer(`${roomId()}-${randCode(8)}`);
+  } catch (err) {
+    return { error: peerErrMsg(err) };
+  }
+  setupParticipant(peer);
+  S.view = new Map([[S.myId, { name: S.myName, sharing: false, seq: 0, audio: false, order: 0 }]]);
+  const r = await connectRoom(15000);
+  if (!r.conn) {
+    try { peer.destroy(); } catch {}
+    S.peer = null;
+    return {
+      error: r.error === 'missing'
+        ? 'Sala não encontrada. Confira o código.'
+        : 'Não consegui entrar na sala. Confira o código e tente de novo.',
+    };
+  }
+  attachRoom(r.conn);
+  return { ok: true };
+}
+
 async function createRoom(attempt = 0) {
   if (S.busy && attempt === 0) return;
   if (!readName() || !libOk()) return;
   setBusy(true, 'Criando sala…');
   S.leaving = false;
-  const code = randCode(6);
+  S.code = randCode(6);
   try {
-    await openPeer(PREFIX + code);
+    await startHosting(S.code, false);
   } catch (err) {
     if (err.type === 'unavailable-id' && attempt < 3) return createRoom(attempt + 1);
+    S.code = '';
     setBusy(false);
     homeMsg(peerErrMsg(err), true);
     return;
   }
-  S.code = code;
-  S.isHost = true;
-  S.myId = S.peer.id;
-  S.roster = new Map([[S.myId, { name: S.myName, sharing: false, seq: 0, audio: false }]]);
-  S.peer.on('connection', onGuestConnection);
+  const r = await joinAsParticipant();
+  if (!r.ok) {
+    stopHosting();
+    S.code = '';
+    setBusy(false);
+    homeMsg(r.error, true);
+    return;
+  }
   setBusy(false);
   homeMsg('');
   enterRoom();
-  broadcastRoster();
 }
 
 async function joinRoom() {
@@ -317,42 +540,13 @@ async function joinRoom() {
   setBusy(true, 'Entrando na sala…');
   S.leaving = false;
   S.code = code;
-
-  let peer;
-  try {
-    peer = await openPeer(`${PREFIX}${code}-${randCode(8)}`);
-  } catch (err) {
-    setBusy(false);
-    homeMsg(peerErrMsg(err), true);
-    return;
-  }
-
-  const conn = peer.connect(hostId(), { reliable: true, serialization: 'json' });
-  const error = await new Promise((resolve) => {
-    const timer = setTimeout(() => done('Não consegui entrar na sala. Confira o código e tente de novo.'), 15000);
-    function done(e) { clearTimeout(timer); S.joining = null; resolve(e); }
-    S.joining = { fail: done };
-    conn.on('open', () => done(null));
-    conn.on('error', (e) => done('Erro ao entrar: ' + (e && e.message)));
-  });
-  if (error) {
-    peer.destroy();
-    S.peer = null;
-    setBusy(false);
-    homeMsg(error, true);
-    return;
-  }
-
-  S.isHost = false;
-  S.myId = peer.id;
-  S.hostConn = conn;
-  S.view = new Map([[S.myId, { name: S.myName, sharing: false, seq: 0, audio: false }]]);
-  conn.on('data', onHostMessage);
-  conn.on('close', () => {
-    if (!S.leaving && S.hostConn === conn) leaveRoom('A sala foi encerrada (quem criou a sala saiu).');
-  });
-  conn.send({ t: 'hello', name: S.myName });
+  const r = await joinAsParticipant();
   setBusy(false);
+  if (!r.ok) {
+    S.code = '';
+    homeMsg(r.error, true);
+    return;
+  }
   homeMsg('');
   enterRoom();
 }
@@ -366,95 +560,116 @@ function enterRoom() {
   renderShareUI();
   renderStage();
   sfx('join');
+  clearInterval(pingTimer);
+  pingTimer = setInterval(measurePings, 2000);
+  measurePings();
 }
 
 function leaveRoom(reason) {
   if (S.leaving && !S.peer) return;
   S.leaving = true;
   sfx('leave');
+  clearInterval(pingTimer);
+  pingTimer = null;
   closePicker(null);
   stopShare(true);
   for (const id of [...S.tiles.keys()]) removeTile(id);
-  const peer = S.peer;
-  if (S.isHost) {
-    for (const c of S.conns.values()) { try { c.send({ t: 'end' }); } catch {} }
-    setTimeout(() => { try { peer && peer.destroy(); } catch {} }, 300);  // dá tempo do aviso sair
-  } else {
-    try { peer && peer.destroy(); } catch {}
-  }
+  stopHosting();   // se eu era o dono, a próxima pessoa da sala assume
+  try { if (S.peer) S.peer.destroy(); } catch {}
   Object.assign(S, {
-    peer: null, myId: '', code: '', isHost: false, hostConn: null, joining: null,
-    conns: new Map(), roster: new Map(), view: new Map(), viewReady: false,
-    outCalls: new Map(), tiles: new Map(), seq: 0, watchers: new Set(), audioMode: 'none', encoderUsed: null,
+    peer: null, myId: '', code: '', joining: null, room: null, roomConn: null, ownerId: '', lostOwner: '',
+    migrating: false, view: new Map(), viewReady: false, outCalls: new Map(), tiles: new Map(), seq: 0,
+    wanted: new Set(), watchers: new Set(), watching: new Map(), audioMode: 'none', encoderUsed: null,
+    pings: new Map(),
   });
   $('grid').textContent = '';
+  $('reactLayer').textContent = '';
   $('room').classList.add('hidden');
   $('home').classList.remove('hidden');
   homeMsg(reason || '', !!reason);
   updateAwake();
 }
 
-// ---------------- anfitrião: mantém a lista da sala ----------------
-function onGuestConnection(conn) {
-  if (!conn.peer.startsWith(hostId() + '-')) { conn.close(); return; }
-  conn.on('data', (msg) => {
-    if (!msg || typeof msg !== 'object') return;
-    if (msg.t === 'hello') {
-      S.conns.set(conn.peer, conn);
-      S.roster.set(conn.peer, { name: cleanName(msg.name), sharing: false, seq: 0, audio: false });
-      broadcastRoster();
-    } else if (msg.t === 'state') {
-      const p = S.roster.get(conn.peer);
-      if (!p) return;
-      p.sharing = !!msg.sharing;
-      p.seq = Number(msg.seq) || 0;
-      p.audio = !!msg.audio;
-      broadcastRoster();
-    }
-  });
-  const drop = () => {
-    S.conns.delete(conn.peer);
-    if (S.roster.delete(conn.peer)) broadcastRoster();
-  };
-  conn.on('close', drop);
-  conn.on('error', drop);
-}
+// ---------------- ping ----------------
+// Mede o tempo de ida e volta (RTT) das conexões diretas: convidado <-> dono da sala, dono <-> cada
+// convidado, e com quem eu estou assistindo. Verde até 80 ms, amarelo até 150 ms, vermelho acima.
+let pingTimer = null;
+const PING_GOOD = 80;
+const PING_OK = 150;
 
-function broadcastRoster() {
-  const list = [...S.roster].map(([id, p]) => ({ id, ...p }));
-  for (const c of S.conns.values()) {
-    if (c.open) { try { c.send({ t: 'roster', list }); } catch {} }
-  }
-  applyRoster(list);
-}
-
-function onHostMessage(msg) {
-  if (!msg || typeof msg !== 'object') return;
-  if (msg.t === 'roster' && Array.isArray(msg.list)) applyRoster(msg.list);
-  else if (msg.t === 'end') leaveRoom('A sala foi encerrada por quem a criou.');
-}
-
-function sendState() {
-  const st = {
-    sharing: !!S.localStream,
-    seq: S.seq,
-    audio: !!(S.localStream && S.localStream.getAudioTracks().length),
-  };
-  if (S.isHost) {
-    const me = S.roster.get(S.myId);
-    if (me) { Object.assign(me, st); broadcastRoster(); }
-  } else if (S.hostConn && S.hostConn.open) {
-    try { S.hostConn.send({ t: 'state', ...st }); } catch {}
+async function rttOf(pc) {
+  if (!pc || pc.connectionState === 'closed') return null;
+  try {
+    const stats = await pc.getStats();
+    let selected = null;
+    let rtt = null;
+    stats.forEach((r) => { if (r.type === 'transport' && r.selectedCandidatePairId) selected = r.selectedCandidatePairId; });
+    stats.forEach((r) => {
+      if (r.type !== 'candidate-pair' || typeof r.currentRoundTripTime !== 'number') return;
+      if (selected ? r.id === selected : (r.nominated && r.state === 'succeeded')) rtt = r.currentRoundTripTime;
+    });
+    return rtt === null ? null : Math.max(1, Math.round(rtt * 1000));
+  } catch {
+    return null;
   }
 }
 
-// ---------------- todos: reage à lista da sala ----------------
-function applyRoster(list) {
+async function measurePings() {
+  if (!S.peer) return;
+  const targets = new Map();
+  if (S.room) {
+    for (const [id, conn] of S.room.conns) if (id !== S.myId) targets.set(id, conn.peerConnection);
+  } else if (S.roomConn && S.ownerId) {
+    targets.set(S.ownerId, S.roomConn.peerConnection);
+  }
+  for (const [id, tile] of S.tiles) if (!targets.has(id)) targets.set(id, tile.call.peerConnection);
+  const pings = new Map();
+  await Promise.all([...targets].map(async ([id, pc]) => {
+    const ms = await rttOf(pc);
+    if (ms !== null) pings.set(id, ms);
+  }));
+  if (!S.peer) return;
+  S.pings = pings;
+  renderPing();
+}
+
+function renderPing() {
+  const el = $('pingBadge');
+  const others = [...S.view.keys()].filter((id) => id !== S.myId);
+  const entries = [...S.pings].filter(([id]) => S.view.has(id) && id !== S.myId);
+  let level = 'none';
+  let tip;
+  if (!others.length) {
+    tip = 'Sozinho na sala — sem ping para medir';
+  } else if (!entries.length) {
+    tip = 'Medindo ping…';
+  } else {
+    const worst = Math.max(...entries.map(([, ms]) => ms));
+    level = worst <= PING_GOOD ? 'good' : worst <= PING_OK ? 'warn' : 'bad';
+    tip = entries.length === 1
+      ? `Ping: ${entries[0][1]} ms`
+      : 'Ping\n' + entries.map(([id, ms]) => `${nameOf(id)}: ${ms} ms`).join('\n');
+  }
+  el.className = 'ping ' + level;
+  el.dataset.tip = tip;
+  const bars = { good: 4, warn: 3, bad: 1, none: 0 }[level];
+  el.querySelectorAll('rect').forEach((r, i) => r.classList.toggle('on', i < bars));
+}
+
+// ---------------- lista da sala ----------------
+function applyRoster(list, owner, merge) {
   const next = new Map();
   for (const p of list) {
     if (!p || typeof p.id !== 'string') continue;
-    next.set(p.id, { name: cleanName(p.name), sharing: !!p.sharing, seq: Number(p.seq) || 0, audio: !!p.audio });
+    next.set(p.id, {
+      name: cleanName(p.name), sharing: !!p.sharing, seq: Number(p.seq) || 0, audio: !!p.audio, order: Number(p.order) || 0,
+    });
   }
+  // Durante a troca de dono a lista ainda está chegando: mantém quem já estava (menos quem saiu).
+  if (merge) for (const [id, p] of S.view) if (!next.has(id) && id !== S.lostOwner) next.set(id, p);
+  const prevOwner = S.ownerId;
+  if (typeof owner === 'string' && owner) S.ownerId = owner;
+
   if (S.viewReady) {
     // Um som só por atualização, do mais importante pro menos.
     const sounds = new Set();
@@ -472,24 +687,37 @@ function applyRoster(list) {
     if (pick) sfx(pick);
   }
   S.view = next;
+  if (S.viewReady && prevOwner && S.ownerId !== prevOwner) {
+    toast(S.ownerId === S.myId ? 'Você agora é o dono da sala' : `${nameOf(S.ownerId)} agora é o dono da sala`);
+  }
   S.viewReady = true;
 
-  // Remove telas de quem saiu ou parou de transmitir (o seq evita apagar uma transmissão nova
+  // Some a tela de quem saiu ou parou de transmitir (o seq evita apagar uma transmissão nova
   // que chegou antes da lista atualizada).
   for (const [id, tile] of [...S.tiles]) {
     const p = next.get(id);
-    if (!p || (!p.sharing && p.seq >= tile.seq)) removeTile(id);
-    else tile.el.querySelector('.tname').textContent = p.name;
+    if (!p || (!p.sharing && p.seq >= tile.seq)) {
+      removeTile(id);
+      S.watching.delete(id);
+    } else {
+      tile.el.querySelector('.tname').textContent = p.name;
+    }
+  }
+  for (const [id, seq] of [...S.watching]) {
+    const p = next.get(id);
+    if (!p || !p.sharing || p.seq > seq) S.watching.delete(id);
   }
   syncCalls();
   renderPeople();
   renderShareUI();
+  renderStage();
 }
 
 function renderPeople() {
   const ul = $('people');
   ul.textContent = '';
-  const ids = [...S.view.keys()].sort((a, b) => (b === hostId()) - (a === hostId()));
+  const ids = [...S.view.keys()].sort((a, b) =>
+    ((b === S.ownerId) - (a === S.ownerId)) || ((S.view.get(a).order || 0) - (S.view.get(b).order || 0)));
   for (const id of ids) {
     const p = S.view.get(id);
     const li = document.createElement('li');
@@ -506,10 +734,10 @@ function renderPeople() {
       nm.appendChild(you);
     }
     li.append(av, nm);
-    if (id === hostId()) {
+    if (id === S.ownerId) {
       const b = document.createElement('span');
       b.className = 'pill host'; b.textContent = 'DONO';
-      b.title = 'Criou a sala — se sair, a sala fecha';
+      b.title = 'Dono da sala — se sair, outra pessoa assume e a sala continua';
       li.appendChild(b);
     }
     if (p.sharing) {
@@ -521,6 +749,7 @@ function renderPeople() {
     ul.appendChild(li);
   }
   $('count').textContent = S.view.size;
+  renderPing();
 }
 
 function renderShareUI() {
@@ -545,7 +774,10 @@ function renderShareUI() {
       app: 'som só deste app',
       loopback: 'som do PC inteiro',
     }[S.audioMode] || 'sem som';
-    const enc = { gpu: ' · vídeo na placa de vídeo', cpu: ' · vídeo no processador' }[S.encoderUsed] || '';
+    const enc = {
+      gpu: ` · H.264 na placa${S.hw.gpu ? ' ' + S.hw.gpu : ' de vídeo'}`,
+      cpu: ` · VP8 no processador${S.hw.cpu ? ' ' + S.hw.cpu : ''}`,
+    }[S.encoderUsed] || '';
     hint.textContent = `● Ao vivo · ${n} ${n === 1 ? 'pessoa assistindo' : 'pessoas assistindo'} · ${som}${enc}`;
   } else {
     hint.textContent = 'O microfone nunca é usado — só a imagem e, se quiser, o som do PC.';
@@ -553,11 +785,124 @@ function renderShareUI() {
   updateAwake();
 }
 
+// Telas que estou assistindo + um cartão "Assistir" para cada transmissão que ainda não abri.
 function renderStage() {
-  const n = S.tiles.size;
+  const grid = $('grid');
+  for (const el of [...grid.querySelectorAll('.card-stream')]) el.remove();
+  const live = [...S.view].filter(([id, p]) => id !== S.myId && p.sharing && !S.tiles.has(id));
+  for (const [id, p] of live) grid.appendChild(makeCard(id, p));
+  const n = S.tiles.size + live.length;
   $('empty').classList.toggle('hidden', n > 0);
-  $('grid').classList.toggle('solo', n === 1);
+  $('emptyTitle').textContent = S.localStream ? 'Você está transmitindo' : 'Ninguém está transmitindo agora';
+  $('emptyText').textContent = S.localStream
+    ? 'As reações de quem assiste aparecem aqui. Quando outra pessoa transmitir, ela aparece aqui também.'
+    : 'Quando alguém da sala transmitir, a tela aparece aqui.';
+  grid.classList.toggle('solo', n === 1);
   updateAwake();
+}
+
+function makeCard(id, p) {
+  const pending = S.watching.get(id) === p.seq;
+  const el = document.createElement('div');
+  el.className = 'tile card-stream';
+  el.innerHTML = `
+    <div class="cs">
+      ${svg(ICON.screen, 46)}
+      <div class="cs-name"></div>
+      <div class="cs-meta"><span class="pill live">AO VIVO</span><span class="cs-aud"></span></div>
+      <button class="btn primary" type="button"></button>
+    </div>`;
+  el.querySelector('.cs-name').textContent = p.name;
+  el.querySelector('.cs-aud').textContent = p.audio ? 'com som' : 'sem som';
+  const btn = el.querySelector('button');
+  btn.textContent = pending ? 'Conectando…' : 'Assistir';
+  btn.disabled = pending;
+  btn.onclick = () => watch(id);
+  return el;
+}
+
+// ---------------- assistir quando quiser (estilo Discord) ----------------
+function watch(id) {
+  const p = S.view.get(id);
+  if (!p || !p.sharing || S.tiles.has(id)) return;
+  const seq = p.seq;
+  S.watching.set(id, seq);
+  if (!relay(id, { t: 'watch', on: true, seq })) {
+    S.watching.delete(id);
+    toast('Sem conexão com a sala agora — tente de novo em instantes.', 'warn');
+  }
+  renderStage();
+  setTimeout(() => {
+    if (S.watching.get(id) === seq && !S.tiles.has(id)) {
+      S.watching.delete(id);
+      renderStage();
+      toast(`Não consegui abrir a transmissão de ${nameOf(id)}.`, 'warn');
+    }
+  }, 15000);
+}
+
+function unwatch(id) {
+  S.watching.delete(id);
+  relay(id, { t: 'watch', on: false });
+  removeTile(id);
+}
+
+// Recados de outras pessoas (repassados pela sala).
+function onRelayed(from, msg) {
+  if (msg.t === 'watch') {
+    if (msg.on) {
+      if (!S.localStream || (msg.seq && Number(msg.seq) !== S.seq) || !S.view.has(from)) return;
+      S.wanted.add(from);
+      syncCalls();
+    } else {
+      S.wanted.delete(from);
+      closeOut(from);
+      S.watchers.delete(from);
+      renderShareUI();
+    }
+  } else if (msg.t === 'react') {
+    if (!REACTIONS.includes(msg.emoji) || typeof msg.target !== 'string') return;
+    if (msg.target !== S.myId && !S.tiles.has(msg.target)) return;
+    showReaction(msg.target, msg.emoji, nameOf(from));
+  }
+}
+
+// ---------------- reações na tela ----------------
+let lastReact = 0;
+function react(target, emoji) {
+  const now = Date.now();
+  if (now - lastReact < 250) return;
+  lastReact = now;
+  showReaction(target, emoji, S.myName);
+  cast({ t: 'react', target, emoji });
+}
+
+// Quem transmite vê as reações subindo no canto da área principal; quem assiste, por cima da tela.
+function showReaction(target, emoji, who) {
+  let layer;
+  let left;
+  if (target === S.myId) {
+    layer = $('reactLayer');
+    left = 62 + Math.random() * 28;
+  } else {
+    const tile = S.tiles.get(target);
+    if (!tile) return;
+    layer = tile.el.querySelector('.react-layer');
+    left = 8 + Math.random() * 72;
+  }
+  const el = document.createElement('div');
+  el.className = 'react';
+  el.style.left = left + '%';
+  const e = document.createElement('span');
+  e.className = 'emoji';
+  e.textContent = emoji;
+  const n = document.createElement('span');
+  n.className = 'who';
+  n.textContent = who;
+  el.append(e, n);
+  layer.appendChild(el);
+  while (layer.children.length > 30) layer.firstChild.remove();
+  setTimeout(() => el.remove(), 3000);
 }
 
 // ---------------- seletor de tela/janela (app de Windows) ----------------
@@ -792,11 +1137,12 @@ async function startShare() {
   S.encoder = $('encoderSel').value === 'cpu' ? 'cpu' : 'gpu';
   S.encoderUsed = null;
   S.seq += 1;
+  S.wanted = new Set();
   S.watchers = new Set();
   $('selfPreview').srcObject = stream;
   sendState();
-  syncCalls();
   renderShareUI();
+  renderStage();
   sfx('live');
 }
 
@@ -808,22 +1154,26 @@ function stopShare(silent) {
   AppAudio.stop();
   S.audioMode = 'none';
   S.encoderUsed = null;
+  S.wanted = new Set();
   S.watchers = new Set();
   for (const id of [...S.outCalls.keys()]) closeOut(id);
   $('selfPreview').srcObject = null;
+  $('reactLayer').textContent = '';
   if (!silent) {
     sendState();
     sfx('liveEnd');
   }
   renderShareUI();
+  renderStage();
 }
 
-// Garante que cada pessoa da sala esteja recebendo minha tela (e só elas).
+// Manda minha tela só para quem pediu para assistir (e ainda está na sala).
 function syncCalls() {
-  for (const id of [...S.outCalls.keys()]) if (!S.view.has(id)) closeOut(id);
-  for (const id of [...S.watchers]) if (!S.view.has(id)) S.watchers.delete(id);
+  for (const id of [...S.wanted]) if (!S.view.has(id)) S.wanted.delete(id);
+  for (const id of [...S.outCalls.keys()]) if (!S.wanted.has(id)) closeOut(id);
+  for (const id of [...S.watchers]) if (!S.wanted.has(id)) S.watchers.delete(id);
   if (!S.localStream) return;
-  for (const id of S.view.keys()) {
+  for (const id of S.wanted) {
     if (id !== S.myId && !S.outCalls.has(id)) callPeer(id);
   }
 }
@@ -855,9 +1205,11 @@ function callPeer(id, tries = 0) {
     if (retried || S.outCalls.get(id) !== entry) return;
     retried = true;
     S.outCalls.delete(id);
+    S.watchers.delete(id);
+    renderShareUI();
     if (tries >= 3) return;
     setTimeout(() => {
-      if (S.localStream && S.seq === seq && S.view.has(id) && !S.outCalls.has(id)) callPeer(id, tries + 1);
+      if (S.localStream && S.seq === seq && S.wanted.has(id) && S.view.has(id) && !S.outCalls.has(id)) callPeer(id, tries + 1);
     }, 2000);
   };
   call.on('close', retry);
@@ -866,7 +1218,7 @@ function callPeer(id, tries = 0) {
 
 // Confere qual codificador o navegador realmente usou (a placa pode não estar disponível).
 async function detectEncoder(pc, seq) {
-  await new Promise((r) => setTimeout(r, 1500));
+  await sleep(1500);
   if (S.seq !== seq || !S.localStream || S.encoderUsed) return;
   try {
     const stats = await pc.getStats();
@@ -915,7 +1267,8 @@ function tuneSender(call) {
 
 // ---------------- assistir a tela dos outros ----------------
 function onIncomingCall(call) {
-  if (!S.code || !call.peer.startsWith(hostId())) { call.close(); return; }
+  // Só aceita transmissões desta sala que eu pedi para assistir.
+  if (!S.code || !call.peer.startsWith(roomId() + '-') || !S.watching.has(call.peer)) { call.close(); return; }
   const seq = Number(call.metadata && call.metadata.seq) || 0;
   const old = S.tiles.get(call.peer);
   if (old && old.seq > seq) { call.close(); return; }
@@ -936,23 +1289,36 @@ function makeTile(id, seq, call) {
   el.className = 'tile';
   el.innerHTML = `
     <video playsinline autoplay></video>
+    <div class="react-layer"></div>
     <div class="tile-wait"><div class="spin"></div><span>Conectando à transmissão…</span></div>
     <button class="btn unmute hidden" type="button">${svg(ICON.vol)} Clique para ouvir o som</button>
     <div class="tile-bar">
       <span class="pill live">AO VIVO</span>
       <span class="tname"></span>
+      <div class="reacts"></div>
       <span class="aud-off hidden">sem som</span>
       <div class="aud hidden">
         <button class="ib mute" type="button" title="Silenciar">${svg(ICON.vol)}</button>
         <input class="vol" type="range" min="0" max="1" step="0.05" value="1" aria-label="Volume">
       </div>
       <button class="ib fs" type="button" title="Tela cheia (ou clique duas vezes)">${svg(ICON.fs)}</button>
+      <button class="ib stopw" type="button" title="Parar de assistir">${svg(ICON.close)}</button>
     </div>`;
   const video = el.querySelector('video');
   const muteBtn = el.querySelector('.mute');
   const vol = el.querySelector('.vol');
   const unmuteBtn = el.querySelector('.unmute');
   el.querySelector('.tname').textContent = nameOf(id);
+
+  const reacts = el.querySelector('.reacts');
+  for (const emoji of REACTIONS) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = emoji;
+    b.title = 'Reagir';
+    b.onclick = () => react(id, emoji);
+    reacts.appendChild(b);
+  }
 
   const syncAudioUI = () => {
     const off = video.muted || video.volume === 0;
@@ -982,6 +1348,7 @@ function makeTile(id, seq, call) {
     else el.requestFullscreen().catch(() => {});
   };
   el.querySelector('.fs').onclick = toggleFs;
+  el.querySelector('.stopw').onclick = () => unwatch(id);
   video.ondblclick = toggleFs;
 
   // Esconde a barra quando o mouse fica parado.
@@ -1001,7 +1368,7 @@ function makeTile(id, seq, call) {
       'Ainda conectando… Se não abrir, a rede de um de vocês pode estar bloqueando a conexão direta.';
   }, 20000);
 
-  $('grid').appendChild(el);
+  $('grid').prepend(el);
   return { id, seq, call, el, video, syncAudioUI };
 }
 
@@ -1039,6 +1406,21 @@ function removeTile(id) {
   renderStage();
 }
 
+// ---------------- marca do processador e da placa de vídeo ----------------
+function labelEncoders() {
+  for (const o of $('encoderSel').options) {
+    if (o.value === 'gpu') o.textContent = S.hw.gpu ? `H.264 · Placa ${S.hw.gpu}` : 'H.264 · Placa de vídeo';
+    if (o.value === 'cpu') o.textContent = S.hw.cpu ? `VP8 · Processador ${S.hw.cpu}` : 'VP8 · Processador';
+  }
+}
+if (IS_APP && window.tav.hardware) {
+  window.tav.hardware().then((hw) => {
+    S.hw = { cpu: (hw && hw.cpu) || '', gpu: (hw && hw.gpu) || '' };
+    labelEncoders();
+    renderShareUI();
+  }).catch(() => {});
+}
+
 // ---------------- eventos da página ----------------
 $('createBtn').onclick = () => createRoom();
 $('joinBtn').onclick = joinRoom;
@@ -1052,7 +1434,8 @@ $('leaveBtn').onclick = () => leaveRoom();
 $('copyCodeBtn').onclick = () => copy(S.code, 'Código copiado! Mande pros seus amigos.');
 $('qualitySel').addEventListener('change', (e) => store('tav-quality', e.target.value));
 $('encoderSel').addEventListener('change', (e) => store('tav-encoder', e.target.value));
-$('audioChk').addEventListener('change', (e) => store('tav-audio', e.target.checked ? '1' : '0'));if (!IS_APP) {
+$('audioChk').addEventListener('change', (e) => store('tav-audio', e.target.checked ? '1' : '0'));
+if (!IS_APP) {
   $('audioNote').textContent = 'Na janela que abrir, ative “Compartilhar áudio” (Tela inteira ou Guia). O microfone nunca vai junto.';
 }
 
@@ -1066,7 +1449,7 @@ if (IS_APP) {
 }
 $('updateBtn').onclick = () => {
   if (S.peer) leaveRoom();
-  setTimeout(() => window.tav.restartToUpdate(), 400);   // dá tempo de avisar a sala
+  setTimeout(() => window.tav.restartToUpdate(), 400);
 };
 $('updateLater').onclick = () => {
   $('updateBar').classList.add('hidden');
@@ -1074,13 +1457,13 @@ $('updateLater').onclick = () => {
 };
 
 window.addEventListener('pagehide', () => {
-  if (!S.peer) return;
-  if (S.isHost) for (const c of S.conns.values()) { try { c.send({ t: 'end' }); } catch {} }
-  try { S.peer.destroy(); } catch {}
+  stopHosting();
+  try { if (S.peer) S.peer.destroy(); } catch {}
 });
 
 // Preferências salvas.
 $('nameInput').value = store('tav-name') || '';
 if (QUALITY[store('tav-quality')]) $('qualitySel').value = store('tav-quality');
 if (store('tav-encoder') === 'cpu') $('encoderSel').value = 'cpu';
-if (store('tav-audio') === '0') $('audioChk').checked = false;($('nameInput').value ? $('createBtn') : $('nameInput')).focus();
+if (store('tav-audio') === '0') $('audioChk').checked = false;
+($('nameInput').value ? $('createBtn') : $('nameInput')).focus();
