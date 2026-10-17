@@ -32,6 +32,8 @@ const S = {
   view: new Map(),        // todos: última lista recebida
   viewReady: false,
   localStream: null, seq: 0, quality: QUALITY['1080-30'],
+  audioMode: 'none',      // 'system' (PC sem Discord) | 'app' (só a janela) | 'loopback' (PC inteiro) | 'none'
+  watchers: new Set(),    // quem já está assistindo minha transmissão atual
   outCalls: new Map(),    // id -> { call, seq }  (quem está recebendo minha tela)
   tiles: new Map(),       // id -> tile  (telas que estou assistindo)
 };
@@ -48,7 +50,7 @@ const nameOf = (id) => (S.view.get(id) || {}).name || 'Alguém';
 function colorOf(id) {
   let h = 0;
   for (const c of id) h = (h * 31 + c.charCodeAt(0)) >>> 0;
-  return `hsl(${h % 360} 55% 45%)`;
+  return `hsl(0 0% ${22 + (h % 21)}%)`;   // tons de cinza, com o texto branco legível
 }
 function store(key, val) {
   try {
@@ -124,6 +126,55 @@ function readName() {
 function updateAwake() {
   // Não deixa o monitor apagar enquanto você transmite ou assiste.
   if (IS_APP) window.tav.keepAwake(!!S.localStream || S.tiles.size > 0);
+}
+
+// ---------------- sons de aviso (estilo Discord, gerados na hora) ----------------
+let sfxCtx = null;
+const SFX = {
+  join:    [[587.33, 0, 0.16], [880, 0.09, 0.24]],                                   // alguém entrou
+  leave:   [[880, 0, 0.16], [523.25, 0.09, 0.26]],                                   // alguém saiu
+  live:    [[523.25, 0, 0.3], [659.25, 0.07, 0.3], [783.99, 0.14, 0.3], [1046.5, 0.21, 0.4]], // começou a transmitir
+  liveEnd: [[783.99, 0, 0.24], [659.25, 0.07, 0.24], [523.25, 0.14, 0.3]],          // parou de transmitir
+  viewer:  [[1318.5, 0, 0.12], [1760, 0.06, 0.2]],                                  // alguém começou a te assistir
+};
+function sfx(name) {
+  if (!SFX[name]) return;
+  try {
+    if (!sfxCtx) sfxCtx = new AudioContext();
+    if (sfxCtx.state === 'suspended') sfxCtx.resume();
+    const now = sfxCtx.currentTime + 0.01;
+    for (const [freq, at, dur] of SFX[name]) {
+      const osc = sfxCtx.createOscillator();
+      const gain = sfxCtx.createGain();
+      osc.type = name === 'join' || name === 'leave' ? 'triangle' : 'sine';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, now + at);
+      gain.gain.exponentialRampToValueAtTime(0.16, now + at + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + at + dur);
+      osc.connect(gain).connect(sfxCtx.destination);
+      osc.start(now + at);
+      osc.stop(now + at + dur + 0.05);
+    }
+  } catch (e) { console.warn('[sfx]', e); }
+}
+
+// Avisa "Fulano está assistindo" — junta quem chegar quase junto num aviso só.
+let viewerQueue = [];
+let viewerTimer = null;
+function announceViewer(id) {
+  if (S.watchers.has(id)) return;
+  S.watchers.add(id);
+  viewerQueue.push(nameOf(id));
+  clearTimeout(viewerTimer);
+  viewerTimer = setTimeout(() => {
+    const names = viewerQueue;
+    viewerQueue = [];
+    if (!names.length || !S.localStream) return;
+    const who = names.length === 1 ? names[0] : names.slice(0, -1).join(', ') + ' e ' + names[names.length - 1];
+    toast(`${who} ${names.length === 1 ? 'está' : 'estão'} assistindo sua tela`);
+    sfx('viewer');
+  }, 700);
+  renderShareUI();
 }
 
 // Pede som estéreo e com mais qualidade no Opus (o padrão do WebRTC é pensado pra voz).
@@ -266,11 +317,13 @@ function enterRoom() {
   renderPeople();
   renderShareUI();
   renderStage();
+  sfx('join');
 }
 
 function leaveRoom(reason) {
   if (S.leaving && !S.peer) return;
   S.leaving = true;
+  sfx('leave');
   closePicker(null);
   stopShare(true);
   for (const id of [...S.tiles.keys()]) removeTile(id);
@@ -284,7 +337,7 @@ function leaveRoom(reason) {
   Object.assign(S, {
     peer: null, myId: '', code: '', isHost: false, hostConn: null, joining: null,
     conns: new Map(), roster: new Map(), view: new Map(), viewReady: false,
-    outCalls: new Map(), tiles: new Map(), seq: 0,
+    outCalls: new Map(), tiles: new Map(), seq: 0, watchers: new Set(), audioMode: 'none',
   });
   $('grid').textContent = '';
   $('room').classList.add('hidden');
@@ -355,12 +408,20 @@ function applyRoster(list) {
     next.set(p.id, { name: cleanName(p.name), sharing: !!p.sharing, seq: Number(p.seq) || 0, audio: !!p.audio });
   }
   if (S.viewReady) {
-    for (const [id, p] of next) if (id !== S.myId && !S.view.has(id)) toast(`${p.name} entrou na sala`);
-    for (const [id, p] of S.view) if (id !== S.myId && !next.has(id)) toast(`${p.name} saiu da sala`);
+    // Um som só por atualização, do mais importante pro menos.
+    const sounds = new Set();
     for (const [id, p] of next) {
+      if (id === S.myId) continue;
       const old = S.view.get(id);
-      if (id !== S.myId && old && p.sharing && !old.sharing) toast(`${p.name} começou a transmitir`);
+      if (!old) { toast(`${p.name} entrou na sala`); sounds.add('join'); }
+      if (old && p.sharing && !old.sharing) { toast(`${p.name} começou a transmitir`); sounds.add('live'); }
+      if (old && !p.sharing && old.sharing) { toast(`${p.name} parou de transmitir`); sounds.add('liveEnd'); }
     }
+    for (const [id, p] of S.view) {
+      if (id !== S.myId && !next.has(id)) { toast(`${p.name} saiu da sala`); sounds.add('leave'); }
+    }
+    const pick = ['live', 'join', 'liveEnd', 'leave'].find((s) => sounds.has(s));
+    if (pick) sfx(pick);
   }
   S.view = next;
   S.viewReady = true;
@@ -429,9 +490,13 @@ function renderShareUI() {
   if (!canShare) {
     hint.textContent = 'Este aparelho não permite transmitir a tela — mas dá para assistir.';
   } else if (sharing) {
-    const n = Math.max(0, S.view.size - 1);
-    const som = S.localStream.getAudioTracks().length ? 'com som' : 'sem som';
-    hint.textContent = `● Ao vivo para ${n} ${n === 1 ? 'pessoa' : 'pessoas'} · ${som}`;
+    const n = S.watchers.size;
+    const som = {
+      system: 'som do PC (sem Discord)',
+      app: 'som só deste app',
+      loopback: 'som do PC inteiro',
+    }[S.audioMode] || 'sem som';
+    hint.textContent = `● Ao vivo · ${n} ${n === 1 ? 'pessoa assistindo' : 'pessoas assistindo'} · ${som}`;
   } else {
     hint.textContent = 'O microfone nunca é usado — só a imagem e, se quiser, o som do PC.';
   }
@@ -502,15 +567,15 @@ function renderPicker() {
     grid.appendChild(card);
   }
   $('pickGo').disabled = !picker.chosen;
+  $('pickNote').textContent = !$('audioChk').checked ? 'Sem som'
+    : picker.kind === 'screen' ? 'Com o som do PC, sem o Discord · sem microfone'
+    : 'Com o som só deste app · sem microfone';
 }
 
 function pickSource() {
   if (picker) closePicker(null);
   return new Promise((resolve) => {
     picker = { resolve, kind: 'screen', chosen: null, sources: [] };
-    $('pickNote').textContent = $('audioChk').checked
-      ? 'Com som do PC · sem microfone'
-      : 'Sem som';
     $('picker').classList.remove('hidden');
     document.addEventListener('keydown', onPickerKey);
     renderPicker();
@@ -553,6 +618,56 @@ for (const t of document.querySelectorAll('#picker .tab')) {
   };
 }
 
+// ---------------- som app por app (app de Windows) ----------------
+// O ScreenPLAYAudio.exe manda o som já sem o Discord (ou só o da janela escolhida);
+// aqui ele vira uma faixa de áudio normal para a transmissão.
+const AppAudio = {
+  ctx: null,
+  off: null,
+
+  async start(sourceId) {
+    if (!IS_APP || !window.tav.audioStart) return null;
+    let result;
+    try { result = await window.tav.audioStart({ sourceId }); } catch (e) { result = { ok: false, error: e.message }; }
+    if (!result || !result.ok) {
+      console.warn('[app-audio]', result && result.error);
+      return null;
+    }
+    try {
+      const ctx = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' });
+      await ctx.audioWorklet.addModule('pcm-worklet.js');
+      const node = new AudioWorkletNode(ctx, 'pcm-player', { numberOfInputs: 0, outputChannelCount: [2] });
+      const dest = ctx.createMediaStreamDestination();
+      node.connect(dest);
+      this.off = window.tav.onPcm((bytes) => {
+        const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+        node.port.postMessage(ab, [ab]);
+      });
+      this.ctx = ctx;
+      return { track: dest.stream.getAudioTracks()[0], mode: result.mode };
+    } catch (e) {
+      console.warn('[app-audio]', e);
+      this.stop();
+      return null;
+    }
+  },
+
+  stop() {
+    if (this.off) this.off();
+    this.off = null;
+    if (IS_APP && window.tav.audioStop) window.tav.audioStop().catch(() => {});
+    if (this.ctx) this.ctx.close().catch(() => {});
+    this.ctx = null;
+  },
+};
+if (IS_APP && window.tav.onAudioEnded) {
+  window.tav.onAudioEnded(() => {
+    if (S.localStream && (S.audioMode === 'system' || S.audioMode === 'app')) {
+      toast('O som da transmissão parou. Pare e transmita de novo para voltar.', 'warn', 7000);
+    }
+  });
+}
+
 // ---------------- transmitir minha tela ----------------
 async function startShare() {
   if (!canShare || S.localStream) return;
@@ -565,11 +680,15 @@ async function startShare() {
   const video = { width: { ideal: q.w }, height: { ideal: q.h }, frameRate: { ideal: q.fps, max: q.fps } };
 
   let options;
+  let appAudio = null;
   if (IS_APP) {
     const sourceId = await pickSource();
     if (!sourceId || !S.peer) return;
-    await window.tav.select(sourceId, withAudio);
-    options = { video, audio };
+    // Primeiro tenta o som separado por app; se o Windows não deixar, usa o som do PC inteiro.
+    if (withAudio) appAudio = await AppAudio.start(sourceId);
+    if (!S.peer) { AppAudio.stop(); return; }
+    await window.tav.select(sourceId, withAudio && !appAudio);
+    options = { video, audio: withAudio && !appAudio ? audio : false };
   } else {
     options = {
       video, audio,
@@ -584,20 +703,30 @@ async function startShare() {
     // Captura só a tela e o áudio do sistema — nunca o microfone.
     stream = await navigator.mediaDevices.getDisplayMedia(options);
   } catch (err) {
+    if (appAudio) AppAudio.stop();
     if (err && err.name !== 'NotAllowedError' && err.name !== 'AbortError') {
       toast('Não foi possível capturar a tela: ' + (err.message || err.name), 'err');
     }
     return;
   }
-  if (!S.peer || S.localStream) { stream.getTracks().forEach((t) => t.stop()); return; }
+  if (!S.peer || S.localStream) {
+    stream.getTracks().forEach((t) => t.stop());
+    if (appAudio) AppAudio.stop();
+    return;
+  }
 
   if (!withAudio) {
     for (const t of stream.getAudioTracks()) { t.stop(); stream.removeTrack(t); }
+  } else if (appAudio) {
+    stream.addTrack(appAudio.track);
   } else if (!stream.getAudioTracks().length) {
     toast(IS_APP
       ? 'Não consegui pegar o som do PC — transmitindo sem som.'
       : 'Transmitindo SEM som: na janela de compartilhamento, ative “Compartilhar áudio”.', 'warn', 8000);
+  } else if (IS_APP) {
+    toast('Este Windows não deixa separar o som do Discord — transmitindo o som do PC inteiro.', 'warn', 8000);
   }
+  S.audioMode = appAudio ? appAudio.mode : (stream.getAudioTracks().length ? 'loopback' : 'none');
   const track = stream.getVideoTracks()[0];
   if (track) {
     try { track.contentHint = q.hint; } catch {}
@@ -607,10 +736,12 @@ async function startShare() {
   S.localStream = stream;
   S.quality = q;
   S.seq += 1;
+  S.watchers = new Set();
   $('selfPreview').srcObject = stream;
   sendState();
   syncCalls();
   renderShareUI();
+  sfx('live');
 }
 
 function stopShare(silent) {
@@ -618,15 +749,22 @@ function stopShare(silent) {
   const stream = S.localStream;
   S.localStream = null;
   stream.getTracks().forEach((t) => t.stop());
+  AppAudio.stop();
+  S.audioMode = 'none';
+  S.watchers = new Set();
   for (const id of [...S.outCalls.keys()]) closeOut(id);
   $('selfPreview').srcObject = null;
-  if (!silent) sendState();
+  if (!silent) {
+    sendState();
+    sfx('liveEnd');
+  }
   renderShareUI();
 }
 
 // Garante que cada pessoa da sala esteja recebendo minha tela (e só elas).
 function syncCalls() {
   for (const id of [...S.outCalls.keys()]) if (!S.view.has(id)) closeOut(id);
+  for (const id of [...S.watchers]) if (!S.view.has(id)) S.watchers.delete(id);
   if (!S.localStream) return;
   for (const id of S.view.keys()) {
     if (id !== S.myId && !S.outCalls.has(id)) callPeer(id);
@@ -641,6 +779,16 @@ function callPeer(id, tries = 0) {
   const entry = { call, seq };
   S.outCalls.set(id, entry);
   tuneSender(call);
+  // Quando a conexão abre, essa pessoa começou a ver minha tela.
+  const pc = call.peerConnection;
+  if (pc) {
+    const onConnected = () => {
+      if (pc.connectionState !== 'connected') return;
+      pc.removeEventListener('connectionstatechange', onConnected);
+      if (S.outCalls.get(id) === entry && S.seq === seq) announceViewer(id);
+    };
+    pc.addEventListener('connectionstatechange', onConnected);
+  }
   let retried = false;
   const retry = () => {
     if (retried || S.outCalls.get(id) !== entry) return;
@@ -824,8 +972,7 @@ $('shareBtn').onclick = () => (S.localStream ? stopShare() : startShare());
 $('leaveBtn').onclick = () => leaveRoom();
 $('copyCodeBtn').onclick = () => copy(S.code, 'Código copiado! Mande pros seus amigos.');
 $('qualitySel').addEventListener('change', (e) => store('tav-quality', e.target.value));
-$('audioChk').addEventListener('change', (e) => store('tav-audio', e.target.checked ? '1' : '0'));
-if (!IS_APP) {
+$('audioChk').addEventListener('change', (e) => store('tav-audio', e.target.checked ? '1' : '0'));if (!IS_APP) {
   $('audioNote').textContent = 'Na janela que abrir, ative “Compartilhar áudio” (Tela inteira ou Guia). O microfone nunca vai junto.';
 }
 
@@ -855,5 +1002,4 @@ window.addEventListener('pagehide', () => {
 // Preferências salvas.
 $('nameInput').value = store('tav-name') || '';
 if (QUALITY[store('tav-quality')]) $('qualitySel').value = store('tav-quality');
-if (store('tav-audio') === '0') $('audioChk').checked = false;
-($('nameInput').value ? $('createBtn') : $('nameInput')).focus();
+if (store('tav-audio') === '0') $('audioChk').checked = false;($('nameInput').value ? $('createBtn') : $('nameInput')).focus();

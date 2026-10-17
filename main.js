@@ -1,4 +1,6 @@
 const { app, BrowserWindow, Menu, desktopCapturer, ipcMain, powerSaveBlocker, session } = require('electron');
+const { spawn } = require('child_process');
+const fs = require('fs');
 const path = require('path');
 const { autoUpdater } = require('electron-updater');
 
@@ -20,6 +22,10 @@ let splashState = { text: 'Iniciando…', progress: null, version: app.getVersio
 let readyVersion = null;     // atualização baixada esperando reiniciar
 let pendingSource = null;    // fonte escolhida no seletor, usada no próximo getDisplayMedia
 let awakeBlocker = null;
+let audioProc = null;        // ScreenPLAYAudio.exe (som app por app, sem o Discord)
+
+// Apps que nunca entram no som da transmissão de tela inteira.
+const AUDIO_EXCLUDE_NAMES = ['discord.exe', 'discordptb.exe', 'discordcanary.exe', 'screenplay.exe'];
 
 // Uma janela só (como o Discord): abrir de novo só traz o app pra frente.
 const gotLock = !!process.env.TAV_PROFILE || app.requestSingleInstanceLock();
@@ -35,6 +41,7 @@ if (!gotLock) {
   });
   app.whenReady().then(start);
   app.on('window-all-closed', () => app.quit());
+  app.on('will-quit', stopAppAudio);
 }
 
 async function start() {
@@ -70,7 +77,7 @@ function createSplash() {
     show: false,
     center: true,
     title: 'ScreenPLAY',
-    backgroundColor: '#0e1015',
+    backgroundColor: '#0a0a0a',
     icon: ICON,
     webPreferences: { preload: PRELOAD, contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
@@ -97,7 +104,7 @@ function createMain() {
     minHeight: 600,
     show: false,
     title: 'ScreenPLAY',
-    backgroundColor: '#0e1015',
+    backgroundColor: '#0a0a0a',
     icon: ICON,
     autoHideMenuBar: true,
     webPreferences: {
@@ -106,6 +113,7 @@ function createMain() {
       nodeIntegration: false,
       sandbox: true,
       backgroundThrottling: false, // continua transmitindo com o app minimizado
+      autoplayPolicy: 'no-user-gesture-required',   // sons de aviso e áudio das telas tocam direto
     },
   });
   lockDown(mainWin);
@@ -114,7 +122,10 @@ function createMain() {
     mainWin.show();
     if (splash && !splash.isDestroyed()) splash.close();
   });
-  mainWin.on('closed', () => { mainWin = null; });
+  mainWin.on('closed', () => {
+    mainWin = null;
+    stopAppAudio();
+  });
   mainWin.loadFile(path.join(__dirname, 'index.html'));
 }
 
@@ -217,6 +228,9 @@ function registerIpc() {
     pendingSource = { id: String(id), audio: !!withAudio };
   });
 
+  ipcMain.handle('tav:audio-start', (e, opts) => startAppAudio(e.sender, opts || {}));
+  ipcMain.handle('tav:audio-stop', () => stopAppAudio());
+
   ipcMain.on('tav:awake', (_e, on) => {
     if (on && awakeBlocker === null) {
       awakeBlocker = powerSaveBlocker.start('prevent-display-sleep');
@@ -225,6 +239,84 @@ function registerIpc() {
       awakeBlocker = null;
     }
   });
+}
+
+// ---------------- som app por app (ScreenPLAYAudio.exe) ----------------
+function audioHelperPath() {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, 'ScreenPLAYAudio.exe')
+    : path.join(__dirname, 'native', 'ScreenPLAYAudio.exe');
+}
+
+// Tela inteira: som do PC menos Discord e o próprio ScreenPLAY. Janela: só o som daquele app.
+// Resolve { ok, mode } — se não der (Windows antigo etc.), a página usa o som do PC inteiro.
+function startAppAudio(sender, { sourceId }) {
+  stopAppAudio();
+  return new Promise((resolve) => {
+    const exe = audioHelperPath();
+    if (process.platform !== 'win32' || !fs.existsSync(exe)) return resolve({ ok: false, error: 'missing helper' });
+    const win = /^window:(\d+):/.exec(String(sourceId || ''));
+    const args = win
+      ? ['--include-hwnd', win[1]]
+      : ['--exclude-pids', String(process.pid), '--exclude-names', AUDIO_EXCLUDE_NAMES.join(',')];
+    const proc = spawn(exe, args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    audioProc = proc;
+
+    let settled = false;
+    const done = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const timer = setTimeout(() => {
+      done({ ok: false, error: 'timeout' });
+      if (audioProc === proc) stopAppAudio();
+    }, 3000);
+
+    let errText = '';
+    proc.stderr.setEncoding('utf8');
+    proc.stderr.on('data', (text) => {
+      errText += text;
+      let nl;
+      while ((nl = errText.indexOf('\n')) >= 0) {
+        const line = errText.slice(0, nl).trim();
+        errText = errText.slice(nl + 1);
+        if (line === 'READY') done({ ok: true, mode: win ? 'app' : 'system' });
+        else if (line.startsWith('ERROR')) done({ ok: false, error: line });
+        else if (line) console.log('[audio]', line);
+      }
+    });
+
+    // PCM 48 kHz/16 bits/estéreo: manda para a página em blocos de ~20 ms (múltiplos de 4 bytes).
+    let pending = Buffer.alloc(0);
+    proc.stdout.on('data', (chunk) => {
+      if (audioProc !== proc || sender.isDestroyed()) return;
+      pending = pending.length ? Buffer.concat([pending, chunk]) : chunk;
+      const usable = pending.length - (pending.length % 4);
+      if (usable >= 3840) {
+        sender.send('tav:pcm', pending.subarray(0, usable));
+        pending = pending.subarray(usable);
+      }
+    });
+
+    proc.on('error', (err) => done({ ok: false, error: err.message }));
+    proc.on('exit', (code) => {
+      done({ ok: false, error: 'exit ' + code });
+      if (audioProc === proc) {
+        audioProc = null;
+        if (!sender.isDestroyed()) sender.send('tav:audio-ended');
+      }
+    });
+  });
+}
+
+function stopAppAudio() {
+  if (!audioProc) return;
+  const proc = audioProc;
+  audioProc = null;
+  try { proc.stdin.end(); } catch {}
+  try { proc.kill(); } catch {}
 }
 
 // Responde ao getDisplayMedia da página com a tela/janela escolhida no seletor do app.

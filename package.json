@@ -1,7 +1,7 @@
 {
   "name": "screenplay",
   "productName": "ScreenPLAY",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Transmita a tela do PC para seus amigos, com ou sem som (sem microfone).",
   "main": "main.js",
   "author": "ScreenPLAY",
@@ -9,6 +9,8 @@
   "private": true,
   "scripts": {
     "start": "electron .",
+    "build:audio": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-audio.ps1",
+    "predist": "npm run build:audio",
     "dist": "electron-builder --win --publish never"
   },
   "dependencies": {
@@ -29,7 +31,14 @@
       "renderer.js",
       "splash.html",
       "splash.js",
+      "pcm-worklet.js",
       "assets/**"
+    ],
+    "extraResources": [
+      {
+        "from": "native/ScreenPLAYAudio.exe",
+        "to": "ScreenPLAYAudio.exe"
+      }
     ],
     "directories": {
       "output": "dist"

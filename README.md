@@ -21,8 +21,9 @@ A imagem vai direto de um PC para o outro (WebRTC). Para os PCs se encontrarem �
 ```bash
 npm install
 npx install-electron
-npm start          # roda o app
-npm run dist       # gera o instalador em dist/
+npm run build:audio   # compila native/ScreenPLAYAudio.exe (som app por app, sem o Discord)
+npm start             # roda o app
+npm run dist          # gera o instalador em dist/ (já compila o ScreenPLAYAudio.exe)
 ```
 
 Para lançar uma versão nova: aumente `version` no `package.json`, rode `npm run dist` e publique um release `vX.Y.Z` com `ScreenPLAY-Setup-X.Y.Z.exe`, o `.blockmap` e o `latest.yml` de `dist/`. Os apps instalados pegam a versão nova sozinhos.

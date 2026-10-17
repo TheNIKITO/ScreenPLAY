@@ -7,17 +7,20 @@
 <title>ScreenPLAY</title>
 <style>
   :root {
-    --bg: #0e1015;
-    --panel: #161920;
-    --panel-2: #1d212a;
-    --line: #2a2f3b;
-    --text: #e9ebf1;
-    --muted: #98a1b3;
-    --accent: #5b8cff;
-    --accent-2: #4776ea;
+    /* Preto, branco e cinza. O vermelho fica só para "AO VIVO" e erros. */
+    --bg: #0a0a0a;
+    --panel: #121212;
+    --panel-2: #1a1a1a;
+    --panel-3: #232323;
+    --line: #2a2a2a;
+    --line-2: #3a3a3a;
+    --text: #f2f2f2;
+    --muted: #9a9a9a;
+    --faint: #5c5c5c;
+    --accent: #f2f2f2;
+    --accent-2: #d4d4d4;
+    --on-accent: #0a0a0a;
     --live: #ff4d5e;
-    --ok: #34c77b;
-    --warn: #f5b041;
     --radius: 12px;
   }
   * { box-sizing: border-box; }
@@ -40,31 +43,30 @@
     padding: 10px 14px; cursor: pointer; font-weight: 600;
     transition: background .15s, border-color .15s, opacity .15s;
   }
-  .btn:hover { background: #272c38; }
-  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-  .btn.primary:hover { background: var(--accent-2); }
+  .btn:hover { background: var(--panel-3); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+  .btn.primary:hover { background: var(--accent-2); border-color: var(--accent-2); }
   .btn.live { background: var(--live); border-color: var(--live); color: #fff; }
   .btn.live:hover { background: #e8404f; }
-  .btn.danger { background: transparent; border-color: rgba(255, 77, 94, .35); color: #ff8a95; }
-  .btn.danger:hover { background: rgba(255, 77, 94, .1); }
+  .btn.danger { background: transparent; border-color: var(--line-2); color: var(--muted); }
+  .btn.danger:hover { background: rgba(255, 255, 255, .05); color: var(--text); }
   .btn.wide { width: 100%; }
   .btn.big { width: 100%; padding: 13px; font-size: 16px; }
   .btn.sm { padding: 6px 10px; font-size: 13px; }
   .btn:disabled { opacity: .5; cursor: not-allowed; }
-  button:focus-visible { outline: 2px solid #a9c1ff; outline-offset: 2px; }
+  button:focus-visible { outline: 2px solid var(--muted); outline-offset: 2px; }
   input[type=text], select {
     width: 100%; background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px;
     padding: 11px 12px; outline: none; transition: border-color .15s;
   }
-  input[type=text]:focus, select:focus { border-color: var(--accent); }
+  input[type=text]:focus, select:focus { border-color: var(--muted); }
   select:disabled, input:disabled { opacity: .55; }
 
   /* ---------- Tela inicial ---------- */
   #home {
     min-height: 100%; display: grid; place-items: center; padding: 24px 16px;
     background:
-      radial-gradient(1100px 600px at 15% -10%, rgba(91, 140, 255, .16), transparent 60%),
-      radial-gradient(900px 500px at 110% 110%, rgba(255, 77, 94, .10), transparent 60%),
+      radial-gradient(1000px 560px at 50% -12%, rgba(255, 255, 255, .07), transparent 60%),
       var(--bg);
   }
   .card {
@@ -73,20 +75,19 @@
   }
   .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 22px; letter-spacing: -.01em; }
   .brand.small { font-size: 17px; }
-  .brand b { color: #8fb0ff; }
+  .brand > span { font-weight: 400; color: var(--muted); }
+  .brand b { font-weight: 800; color: var(--text); }
   .logo { width: 36px; height: 36px; flex: none; display: block; }
   .brand.small .logo { width: 28px; height: 28px; }
-  .app-ver { position: fixed; left: 0; right: 0; bottom: 10px; text-align: center; font-size: 11px; color: #5d6577; pointer-events: none; }
+  .app-ver { position: fixed; left: 0; right: 0; bottom: 10px; text-align: center; font-size: 11px; color: var(--faint); pointer-events: none; }
 
   .update-bar {
     position: fixed; top: 14px; left: 50%; transform: translateX(-50%); z-index: 60;
     display: flex; align-items: center; gap: 12px; padding: 8px 8px 8px 14px;
-    background: #1a2a22; border: 1px solid #2c5a41; border-radius: 12px;
-    box-shadow: 0 12px 30px rgba(0, 0, 0, .4); font-size: 14px; animation: drop .25s ease-out;
+    background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 12px;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, .5); font-size: 14px; animation: drop .25s ease-out;
   }
-  .update-bar svg { color: var(--ok); flex: none; }
-  .update-bar .btn.primary { background: var(--ok); border-color: var(--ok); color: #08140e; }
-  .update-bar .btn.primary:hover { background: #2db36c; }
+  .update-bar svg { color: var(--text); flex: none; }
   .update-bar .ib { width: 30px; height: 30px; background: transparent; color: var(--muted); }
   @keyframes drop { from { transform: translate(-50%, -8px); opacity: 0; } }
   .sub { color: var(--muted); margin: 8px 0 22px; }
@@ -103,7 +104,7 @@
     margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line);
     font-size: 13px; color: var(--muted); display: flex; gap: 10px; align-items: flex-start;
   }
-  .foot svg { flex: none; margin-top: 1px; color: var(--ok); }
+  .foot svg { flex: none; margin-top: 1px; color: var(--text); }
 
   /* ---------- Sala ---------- */
   #room { height: 100%; display: grid; grid-template-columns: 300px 1fr; }
@@ -116,15 +117,14 @@
   .code-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   .code { font-size: 26px; font-weight: 800; letter-spacing: .16em; font-variant-numeric: tabular-nums; user-select: text; }
   .status { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); margin-top: 10px; }
-  .status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--warn); flex: none; }
-  .status.ok::before { background: var(--ok); }
+  .status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
+  .status.ok::before { background: var(--text); box-shadow: 0 0 0 3px rgba(255, 255, 255, .12); }
   .status.bad::before { background: var(--live); }
   .check { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 12px; cursor: pointer; font-size: 14px; }
   .check input { margin: 3px 0 0; accent-color: var(--accent); width: 16px; height: 16px; flex: none; }
-  .check small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
-  #qualitySel { margin-bottom: 12px; padding: 9px 10px; }
+  .check small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }  #qualitySel { margin-bottom: 12px; padding: 9px 10px; }
   .hint { font-size: 12.5px; color: var(--muted); margin: 10px 0 0; }
-  .hint.on { color: #ffb3ba; }
+  .hint.on { color: var(--text); }
   .preview { margin-top: 12px; position: relative; border-radius: 8px; overflow: hidden; background: #000; aspect-ratio: 16 / 9; }
   .preview video { width: 100%; height: 100%; object-fit: contain; display: block; }
   .preview span {
@@ -142,11 +142,11 @@
   .pname small { color: var(--muted); font-weight: 400; }
   .pill { font-size: 10.5px; font-weight: 700; padding: 2px 7px; border-radius: 999px; letter-spacing: .04em; white-space: nowrap; flex: none; }
   .pill.live { background: var(--live); color: #fff; }
-  .pill.host { background: rgba(91, 140, 255, .16); color: #a9c1ff; }
+  .pill.host { background: rgba(255, 255, 255, .1); color: #d4d4d4; }
 
   .stage { position: relative; padding: 16px; overflow: auto; min-width: 0; min-height: 0; }
   .empty { height: 100%; min-height: 260px; display: grid; place-items: center; text-align: center; color: var(--muted); padding: 24px; }
-  .empty svg { color: #3a4152; margin-bottom: 10px; }
+  .empty svg { color: #333; margin-bottom: 10px; }
   .empty strong { display: block; color: var(--text); font-size: 17px; margin-bottom: 4px; }
   .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr)); align-content: start; }
   .grid.solo { height: 100%; grid-template-columns: 1fr; }
@@ -163,7 +163,7 @@
   .tile.idle .tile-bar { opacity: 0; }
   .tile.idle { cursor: none; }
   .tname { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-shadow: 0 1px 2px #000; }
-  .aud-off { font-size: 12px; color: #c9cfdb; background: rgba(255, 255, 255, .1); padding: 2px 8px; border-radius: 999px; }
+  .aud-off { font-size: 12px; color: #cfcfcf; background: rgba(255, 255, 255, .1); padding: 2px 8px; border-radius: 999px; }
   .aud { display: flex; align-items: center; gap: 4px; }
   .vol { width: 90px; accent-color: #fff; }
   .ib {
@@ -175,14 +175,14 @@
     position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
     gap: 12px; color: var(--muted); text-align: center; padding: 20px; font-size: 14px;
   }
-  .spin { width: 28px; height: 28px; border-radius: 50%; border: 3px solid #2f3544; border-top-color: var(--accent); animation: spin 0.9s linear infinite; }
+  .spin { width: 28px; height: 28px; border-radius: 50%; border: 3px solid var(--line-2); border-top-color: var(--text); animation: spin 0.9s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
   .unmute { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); background: rgba(0, 0, 0, .75); border-color: rgba(255, 255, 255, .25); }
 
   /* ---------- Seletor de tela/janela ---------- */
   .modal {
     position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; padding: 24px;
-    background: rgba(5, 6, 9, .72); backdrop-filter: blur(3px);
+    background: rgba(0, 0, 0, .72); backdrop-filter: blur(3px);
   }
   .sheet {
     width: min(880px, 100%); max-height: calc(100vh - 48px); display: flex; flex-direction: column;
@@ -207,8 +207,8 @@
     background: var(--panel-2); border: 2px solid transparent; border-radius: 10px; padding: 8px;
     cursor: pointer; text-align: left; display: flex; flex-direction: column; gap: 8px;
   }
-  .src:hover { border-color: #3a4152; }
-  .src.sel { border-color: var(--accent); background: rgba(91, 140, 255, .1); }
+  .src:hover { border-color: var(--line-2); }
+  .src.sel { border-color: var(--accent); background: rgba(255, 255, 255, .06); }
   .thumb { aspect-ratio: 16 / 9; background: #000; border-radius: 6px; overflow: hidden; display: grid; place-items: center; }
   .thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
   .sname { display: flex; align-items: center; gap: 6px; font-size: 13px; min-width: 0; }
@@ -220,11 +220,11 @@
 
   #toasts { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 50; max-width: min(380px, calc(100vw - 32px)); }
   .toast {
-    background: #232835; border: 1px solid var(--line); border-left: 3px solid var(--accent);
+    background: var(--panel-3); border: 1px solid var(--line-2); border-left: 3px solid var(--text);
     padding: 10px 14px; border-radius: 10px; font-size: 14px; box-shadow: 0 10px 30px rgba(0, 0, 0, .35);
     animation: rise .2s ease-out;
   }
-  .toast.warn { border-left-color: var(--warn); }
+  .toast.warn { border-left-color: var(--muted); }
   .toast.err { border-left-color: var(--live); }
   @keyframes rise { from { transform: translateY(8px); opacity: 0; } }
 </style>
@@ -282,7 +282,7 @@
       <label class="check">
         <input type="checkbox" id="audioChk" checked>
         <span>Com som do PC
-          <small id="audioNote">Envia o que toca no PC (jogo, vídeo, música). O microfone nunca vai junto.</small>
+          <small id="audioNote">Tela inteira: o som do PC, sem o Discord. Uma janela: só o som daquele app. O microfone nunca vai junto.</small>
         </span>
       </label>
       <select id="qualitySel" aria-label="Qualidade">
