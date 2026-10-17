@@ -5,10 +5,11 @@
 // antigas deixam de achar as salas novas (e a atualização automática resolve isso ao abrir).
 const PREFIX = 'screenplay-v1-';
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+// hint 'detail' = segura a resolução. ('motion' derrubava 1080p60 para 640x360 enquanto a banda subia.)
 const QUALITY = {
-  '720-30':  { w: 1280, h: 720,  fps: 30, bitrate: 2500000, hint: 'detail' },
-  '1080-30': { w: 1920, h: 1080, fps: 30, bitrate: 4500000, hint: 'detail' },
-  '1080-60': { w: 1920, h: 1080, fps: 60, bitrate: 8000000, hint: 'motion' },
+  '720-30':  { w: 1280, h: 720,  fps: 30, bitrate: 3000000,  hint: 'detail' },
+  '1080-30': { w: 1920, h: 1080, fps: 30, bitrate: 6000000,  hint: 'detail' },
+  '1080-60': { w: 1920, h: 1080, fps: 60, bitrate: 10000000, hint: 'detail' },
 };
 const ICON = {
   vol:  '<path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M19 5a10 10 0 0 1 0 14"/>',
@@ -34,6 +35,8 @@ const S = {
   localStream: null, seq: 0, quality: QUALITY['1080-30'],
   audioMode: 'none',      // 'system' (PC sem Discord) | 'app' (só a janela) | 'loopback' (PC inteiro) | 'none'
   watchers: new Set(),    // quem já está assistindo minha transmissão atual
+  encoder: 'gpu',         // escolha: 'gpu' (placa de vídeo, H.264) | 'cpu' (processador, VP8)
+  encoderUsed: null,      // o que o navegador realmente está usando: 'gpu' | 'cpu'
   outCalls: new Map(),    // id -> { call, seq }  (quem está recebendo minha tela)
   tiles: new Map(),       // id -> tile  (telas que estou assistindo)
 };
@@ -177,16 +180,61 @@ function announceViewer(id) {
   renderShareUI();
 }
 
-// Pede som estéreo e com mais qualidade no Opus (o padrão do WebRTC é pensado pra voz).
-function stereoSdp(sdp) {
-  const m = sdp.match(/a=rtpmap:(\d+) opus\/48000\/2/i);
-  if (!m) return sdp;
-  const pt = m[1];
-  return sdp.replace(new RegExp(`a=fmtp:${pt} ([^\\r\\n]*)`), (line, params) => {
-    const extra = ['stereo=1', 'sprop-stereo=1', 'maxaveragebitrate=160000']
-      .filter((p) => !params.includes(p.split('=')[0] + '='));
-    return extra.length ? `a=fmtp:${pt} ${params};${extra.join(';')}` : line;
-  });
+// Ajusta a negociação (SDP) de cada conexão:
+//  - som estéreo e com mais qualidade no Opus (o padrão do WebRTC é pensado pra voz);
+//  - vídeo começa já com banda alta (senão os primeiros segundos ficam borrados);
+//  - quem transmite escolhe o codificador: 'gpu' prefere H.264, que no Windows é codificado pela
+//    placa de vídeo (NVIDIA/AMD/Intel); 'cpu' prefere VP8, codificado pelo processador.
+//    Quem assiste não reordena nada (a resposta segue a ordem de quem transmite).
+const VIDEO_BITRATES = 'x-google-start-bitrate=3000;x-google-min-bitrate=1000;x-google-max-bitrate=12000';
+function tuneSdp(sdp, encoder) {
+  const lines = sdp.split('\r\n');
+  const videoPts = new Set();
+  const byCodec = { VP8: [], VP9: [], H264: [], AV1: [] };
+  let section = '';
+  for (const l of lines) {
+    if (l.startsWith('m=')) section = l.slice(2, l.indexOf(' '));
+    const m = /^a=rtpmap:(\d+) (VP8|VP9|H264|AV1)\//i.exec(l);
+    if (m && section === 'video') {
+      videoPts.add(m[1]);
+      byCodec[m[2].toUpperCase()].push(m[1]);
+    }
+  }
+  const withFmtp = new Set(lines.map((l) => (/^a=fmtp:(\d+) /.exec(l) || [])[1]).filter(Boolean));
+  const opus = (/a=rtpmap:(\d+) opus\/48000\/2/i.exec(sdp) || [])[1];
+  let preferred = [];
+  if (encoder === 'gpu') {
+    // H.264 "packetization-mode=1" primeiro (é o que a placa de vídeo usa).
+    const h264 = byCodec.H264;
+    const pm1 = h264.filter((pt) => lines.some((l) => l.startsWith(`a=fmtp:${pt} `) && l.includes('packetization-mode=1')));
+    preferred = [...pm1, ...h264.filter((pt) => !pm1.includes(pt))];
+  } else if (encoder === 'cpu') {
+    preferred = byCodec.VP8;
+  }
+
+  const out = [];
+  for (const l of lines) {
+    if (l.startsWith('m=video') && preferred.length) {
+      const parts = l.split(' ');
+      const pts = parts.slice(3);
+      out.push([...parts.slice(0, 3), ...preferred.filter((p) => pts.includes(p)), ...pts.filter((p) => !preferred.includes(p))].join(' '));
+      continue;
+    }
+    const f = /^a=fmtp:(\d+) (.*)$/.exec(l);
+    if (f && f[1] === opus) {
+      const extra = ['stereo=1', 'sprop-stereo=1', 'maxaveragebitrate=160000'].filter((p) => !f[2].includes(p.split('=')[0] + '='));
+      out.push(extra.length ? `${l};${extra.join(';')}` : l);
+      continue;
+    }
+    if (f && videoPts.has(f[1]) && !f[2].includes('x-google-')) {
+      out.push(`${l};${VIDEO_BITRATES}`);
+      continue;
+    }
+    out.push(l);
+    const r = /^a=rtpmap:(\d+) /.exec(l);
+    if (r && videoPts.has(r[1]) && !withFmtp.has(r[1])) out.push(`a=fmtp:${r[1]} ${VIDEO_BITRATES}`);
+  }
+  return out.join('\r\n');
 }
 
 // ---------------- conexão com o servidor de sinalização ----------------
@@ -337,7 +385,7 @@ function leaveRoom(reason) {
   Object.assign(S, {
     peer: null, myId: '', code: '', isHost: false, hostConn: null, joining: null,
     conns: new Map(), roster: new Map(), view: new Map(), viewReady: false,
-    outCalls: new Map(), tiles: new Map(), seq: 0, watchers: new Set(), audioMode: 'none',
+    outCalls: new Map(), tiles: new Map(), seq: 0, watchers: new Set(), audioMode: 'none', encoderUsed: null,
   });
   $('grid').textContent = '';
   $('room').classList.add('hidden');
@@ -484,6 +532,7 @@ function renderShareUI() {
   btn.disabled = !canShare;
   $('audioChk').disabled = sharing || !canShare;
   $('qualitySel').disabled = sharing || !canShare;
+  $('encoderSel').disabled = sharing || !canShare;
   $('selfBox').classList.toggle('hidden', !sharing);
   const hint = $('shareHint');
   hint.classList.toggle('on', sharing);
@@ -496,7 +545,8 @@ function renderShareUI() {
       app: 'som só deste app',
       loopback: 'som do PC inteiro',
     }[S.audioMode] || 'sem som';
-    hint.textContent = `● Ao vivo · ${n} ${n === 1 ? 'pessoa assistindo' : 'pessoas assistindo'} · ${som}`;
+    const enc = { gpu: ' · vídeo na placa de vídeo', cpu: ' · vídeo no processador' }[S.encoderUsed] || '';
+    hint.textContent = `● Ao vivo · ${n} ${n === 1 ? 'pessoa assistindo' : 'pessoas assistindo'} · ${som}${enc}`;
   } else {
     hint.textContent = 'O microfone nunca é usado — só a imagem e, se quiser, o som do PC.';
   }
@@ -572,6 +622,19 @@ function renderPicker() {
     : 'Com o som só deste app · sem microfone';
 }
 
+// "Tela 1 · 1920×1080 (principal)" — com dois monitores dá pra saber qual é qual.
+function screenLabel(s, screens) {
+  const size = s.width ? ` · ${s.width}×${s.height}` : '';
+  const main = s.primary && screens.length > 1 ? ' (principal)' : '';
+  return (screens.length > 1 ? `Tela ${screens.indexOf(s) + 1}` : 'Tela inteira') + size + main;
+}
+// Já deixa marcada a tela principal.
+function defaultScreen(sources) {
+  const screens = sources.filter((s) => s.isScreen);
+  const main = screens.find((s) => s.primary) || screens[0];
+  return main ? main.id : null;
+}
+
 function pickSource() {
   if (picker) closePicker(null);
   return new Promise((resolve) => {
@@ -586,13 +649,8 @@ function pickSource() {
       const screens = sources.filter((s) => s.isScreen);
       mine.sources = sources
         .filter((s) => s.isScreen || s.name !== document.title)   // não lista o próprio app
-        .map((s) => ({
-          ...s,
-          label: s.isScreen
-            ? (screens.length > 1 ? `Tela ${screens.indexOf(s) + 1}` : 'Tela inteira')
-            : s.name,
-        }));
-      if (screens.length === 1) mine.chosen = screens[0].id;
+        .map((s) => ({ ...s, label: s.isScreen ? screenLabel(s, screens) : s.name }));
+      mine.chosen = defaultScreen(mine.sources);
       renderPicker();
     }).catch((err) => {
       if (picker !== mine) return;
@@ -609,11 +667,7 @@ for (const t of document.querySelectorAll('#picker .tab')) {
   t.onclick = () => {
     if (!picker) return;
     picker.kind = t.dataset.kind;
-    picker.chosen = null;
-    if (picker.kind === 'screen') {
-      const screens = picker.sources.filter((s) => s.isScreen);
-      if (screens.length === 1) picker.chosen = screens[0].id;
-    }
+    picker.chosen = picker.kind === 'screen' ? defaultScreen(picker.sources) : null;
     renderPicker();
   };
 }
@@ -735,6 +789,8 @@ async function startShare() {
 
   S.localStream = stream;
   S.quality = q;
+  S.encoder = $('encoderSel').value === 'cpu' ? 'cpu' : 'gpu';
+  S.encoderUsed = null;
   S.seq += 1;
   S.watchers = new Set();
   $('selfPreview').srcObject = stream;
@@ -751,6 +807,7 @@ function stopShare(silent) {
   stream.getTracks().forEach((t) => t.stop());
   AppAudio.stop();
   S.audioMode = 'none';
+  S.encoderUsed = null;
   S.watchers = new Set();
   for (const id of [...S.outCalls.keys()]) closeOut(id);
   $('selfPreview').srcObject = null;
@@ -774,7 +831,8 @@ function syncCalls() {
 function callPeer(id, tries = 0) {
   if (!S.localStream || !S.peer || S.peer.destroyed || S.peer.disconnected) return;
   const seq = S.seq;
-  const call = S.peer.call(id, S.localStream, { metadata: { seq }, sdpTransform: stereoSdp });
+  const encoder = S.encoder;
+  const call = S.peer.call(id, S.localStream, { metadata: { seq }, sdpTransform: (sdp) => tuneSdp(sdp, encoder) });
   if (!call) return;
   const entry = { call, seq };
   S.outCalls.set(id, entry);
@@ -785,7 +843,10 @@ function callPeer(id, tries = 0) {
     const onConnected = () => {
       if (pc.connectionState !== 'connected') return;
       pc.removeEventListener('connectionstatechange', onConnected);
-      if (S.outCalls.get(id) === entry && S.seq === seq) announceViewer(id);
+      if (S.outCalls.get(id) === entry && S.seq === seq) {
+        announceViewer(id);
+        if (!S.encoderUsed) detectEncoder(pc, seq);
+      }
     };
     pc.addEventListener('connectionstatechange', onConnected);
   }
@@ -801,6 +862,24 @@ function callPeer(id, tries = 0) {
   };
   call.on('close', retry);
   call.on('error', retry);
+}
+
+// Confere qual codificador o navegador realmente usou (a placa pode não estar disponível).
+async function detectEncoder(pc, seq) {
+  await new Promise((r) => setTimeout(r, 1500));
+  if (S.seq !== seq || !S.localStream || S.encoderUsed) return;
+  try {
+    const stats = await pc.getStats();
+    stats.forEach((r) => {
+      if (r.type !== 'outbound-rtp' || r.kind !== 'video' || !r.encoderImplementation) return;
+      const hw = r.powerEfficientEncoder === true || /MediaFoundation|NVIDIA|AMD|Intel|QuickSync/i.test(r.encoderImplementation);
+      S.encoderUsed = hw ? 'gpu' : 'cpu';
+    });
+  } catch { return; }
+  if (S.encoder === 'gpu' && S.encoderUsed === 'cpu') {
+    toast('A placa de vídeo não pôde codificar a transmissão — usando o processador.', 'warn', 7000);
+  }
+  renderShareUI();
 }
 
 function closeOut(id) {
@@ -842,7 +921,7 @@ function onIncomingCall(call) {
   if (old && old.seq > seq) { call.close(); return; }
   if (old) removeTile(call.peer);
 
-  call.answer(undefined, { sdpTransform: stereoSdp });   // não envio nada de volta
+  call.answer(undefined, { sdpTransform: (sdp) => tuneSdp(sdp, null) });   // não envio nada de volta
   const tile = makeTile(call.peer, seq, call);
   S.tiles.set(call.peer, tile);
   call.on('stream', (stream) => attachStream(tile, stream));
@@ -972,6 +1051,7 @@ $('shareBtn').onclick = () => (S.localStream ? stopShare() : startShare());
 $('leaveBtn').onclick = () => leaveRoom();
 $('copyCodeBtn').onclick = () => copy(S.code, 'Código copiado! Mande pros seus amigos.');
 $('qualitySel').addEventListener('change', (e) => store('tav-quality', e.target.value));
+$('encoderSel').addEventListener('change', (e) => store('tav-encoder', e.target.value));
 $('audioChk').addEventListener('change', (e) => store('tav-audio', e.target.checked ? '1' : '0'));if (!IS_APP) {
   $('audioNote').textContent = 'Na janela que abrir, ative “Compartilhar áudio” (Tela inteira ou Guia). O microfone nunca vai junto.';
 }
@@ -1002,4 +1082,5 @@ window.addEventListener('pagehide', () => {
 // Preferências salvas.
 $('nameInput').value = store('tav-name') || '';
 if (QUALITY[store('tav-quality')]) $('qualitySel').value = store('tav-quality');
+if (store('tav-encoder') === 'cpu') $('encoderSel').value = 'cpu';
 if (store('tav-audio') === '0') $('audioChk').checked = false;($('nameInput').value ? $('createBtn') : $('nameInput')).focus();

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, desktopCapturer, ipcMain, powerSaveBlocker, session } = require('electron');
+const { app, BrowserWindow, Menu, desktopCapturer, ipcMain, powerSaveBlocker, screen, session } = require('electron');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
@@ -215,13 +215,21 @@ function registerIpc() {
       thumbnailSize: { width: 320, height: 180 },
       fetchWindowIcons: true,
     });
-    return sources.map((s) => ({
-      id: s.id,
-      name: s.name,
-      isScreen: s.id.startsWith('screen:'),
-      thumb: s.thumbnail && !s.thumbnail.isEmpty() ? s.thumbnail.toDataURL() : '',
-      icon: s.appIcon && !s.appIcon.isEmpty() ? s.appIcon.toDataURL() : '',
-    }));
+    const displays = screen.getAllDisplays();
+    const primaryId = screen.getPrimaryDisplay().id;
+    return sources.map((s) => {
+      const d = displays.find((x) => String(x.id) === s.display_id);
+      return {
+        id: s.id,
+        name: s.name,
+        isScreen: s.id.startsWith('screen:'),
+        width: d ? Math.round(d.size.width * d.scaleFactor) : 0,
+        height: d ? Math.round(d.size.height * d.scaleFactor) : 0,
+        primary: !!d && d.id === primaryId,
+        thumb: s.thumbnail && !s.thumbnail.isEmpty() ? s.thumbnail.toDataURL() : '',
+        icon: s.appIcon && !s.appIcon.isEmpty() ? s.appIcon.toDataURL() : '',
+      };
+    });
   });
 
   ipcMain.handle('tav:select', (_e, id, withAudio) => {

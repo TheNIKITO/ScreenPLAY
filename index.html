@@ -122,7 +122,7 @@
   .status.bad::before { background: var(--live); }
   .check { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 12px; cursor: pointer; font-size: 14px; }
   .check input { margin: 3px 0 0; accent-color: var(--accent); width: 16px; height: 16px; flex: none; }
-  .check small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }  #qualitySel { margin-bottom: 12px; padding: 9px 10px; }
+  .check small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }  #qualitySel, #encoderSel { margin-bottom: 12px; padding: 9px 10px; }
   .hint { font-size: 12.5px; color: var(--muted); margin: 10px 0 0; }
   .hint.on { color: var(--text); }
   .preview { margin-top: 12px; position: relative; border-radius: 8px; overflow: hidden; background: #000; aspect-ratio: 16 / 9; }
@@ -289,6 +289,10 @@
         <option value="720-30">720p · 30 fps (internet fraca)</option>
         <option value="1080-30" selected>1080p · 30 fps</option>
         <option value="1080-60">1080p · 60 fps (jogos e vídeos)</option>
+      </select>
+      <select id="encoderSel" aria-label="Codificador de vídeo">
+        <option value="gpu" selected>Vídeo pela placa (GPU)</option>
+        <option value="cpu">Vídeo pelo processador (CPU)</option>
       </select>
       <button id="shareBtn" class="btn primary wide" type="button">Transmitir minha tela</button>
       <p id="shareHint" class="hint"></p>
