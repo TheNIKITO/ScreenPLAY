@@ -1,0 +1,60 @@
+{
+  "name": "screenplay",
+  "productName": "ScreenPLAY",
+  "version": "1.1.0",
+  "description": "Transmita a tela do PC para seus amigos, com ou sem som (sem microfone).",
+  "main": "main.js",
+  "author": "ScreenPLAY",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win --publish never"
+  },
+  "dependencies": {
+    "electron-updater": "6.8.9",
+    "peerjs": "1.5.5"
+  },
+  "devDependencies": {
+    "electron": "44.8.0",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "com.screenplay.app",
+    "productName": "ScreenPLAY",
+    "files": [
+      "main.js",
+      "preload.js",
+      "index.html",
+      "renderer.js",
+      "splash.html",
+      "splash.js",
+      "assets/**"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.png"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "artifactName": "ScreenPLAY-Setup-${version}.${ext}",
+      "shortcutName": "ScreenPLAY",
+      "uninstallDisplayName": "ScreenPLAY",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "runAfterFinish": true
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "TheNIKITO",
+        "repo": "ScreenPLAY",
+        "releaseType": "release"
+      }
+    ]
+  }
+}

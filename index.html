@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://0.peerjs.com wss://0.peerjs.com; media-src 'self' blob: mediastream:">
+<title>ScreenPLAY</title>
+<style>
+  :root {
+    --bg: #0e1015;
+    --panel: #161920;
+    --panel-2: #1d212a;
+    --line: #2a2f3b;
+    --text: #e9ebf1;
+    --muted: #98a1b3;
+    --accent: #5b8cff;
+    --accent-2: #4776ea;
+    --live: #ff4d5e;
+    --ok: #34c77b;
+    --warn: #f5b041;
+    --radius: 12px;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.45 "Segoe UI", system-ui, -apple-system, Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    user-select: none;
+  }
+  input { user-select: text; }
+  button, input, select { font: inherit; color: inherit; }
+  .hidden { display: none !important; }
+
+  /* ---------- Botões e campos ---------- */
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    border: 1px solid var(--line); background: var(--panel-2); border-radius: 10px;
+    padding: 10px 14px; cursor: pointer; font-weight: 600;
+    transition: background .15s, border-color .15s, opacity .15s;
+  }
+  .btn:hover { background: #272c38; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover { background: var(--accent-2); }
+  .btn.live { background: var(--live); border-color: var(--live); color: #fff; }
+  .btn.live:hover { background: #e8404f; }
+  .btn.danger { background: transparent; border-color: rgba(255, 77, 94, .35); color: #ff8a95; }
+  .btn.danger:hover { background: rgba(255, 77, 94, .1); }
+  .btn.wide { width: 100%; }
+  .btn.big { width: 100%; padding: 13px; font-size: 16px; }
+  .btn.sm { padding: 6px 10px; font-size: 13px; }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  button:focus-visible { outline: 2px solid #a9c1ff; outline-offset: 2px; }
+  input[type=text], select {
+    width: 100%; background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px;
+    padding: 11px 12px; outline: none; transition: border-color .15s;
+  }
+  input[type=text]:focus, select:focus { border-color: var(--accent); }
+  select:disabled, input:disabled { opacity: .55; }
+
+  /* ---------- Tela inicial ---------- */
+  #home {
+    min-height: 100%; display: grid; place-items: center; padding: 24px 16px;
+    background:
+      radial-gradient(1100px 600px at 15% -10%, rgba(91, 140, 255, .16), transparent 60%),
+      radial-gradient(900px 500px at 110% 110%, rgba(255, 77, 94, .10), transparent 60%),
+      var(--bg);
+  }
+  .card {
+    width: 100%; max-width: 420px; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 18px; padding: 28px; box-shadow: 0 24px 60px rgba(0, 0, 0, .35);
+  }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 22px; letter-spacing: -.01em; }
+  .brand.small { font-size: 17px; }
+  .brand b { color: #8fb0ff; }
+  .logo { width: 36px; height: 36px; flex: none; display: block; }
+  .brand.small .logo { width: 28px; height: 28px; }
+  .app-ver { position: fixed; left: 0; right: 0; bottom: 10px; text-align: center; font-size: 11px; color: #5d6577; pointer-events: none; }
+
+  .update-bar {
+    position: fixed; top: 14px; left: 50%; transform: translateX(-50%); z-index: 60;
+    display: flex; align-items: center; gap: 12px; padding: 8px 8px 8px 14px;
+    background: #1a2a22; border: 1px solid #2c5a41; border-radius: 12px;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, .4); font-size: 14px; animation: drop .25s ease-out;
+  }
+  .update-bar svg { color: var(--ok); flex: none; }
+  .update-bar .btn.primary { background: var(--ok); border-color: var(--ok); color: #08140e; }
+  .update-bar .btn.primary:hover { background: #2db36c; }
+  .update-bar .ib { width: 30px; height: 30px; background: transparent; color: var(--muted); }
+  @keyframes drop { from { transform: translate(-50%, -8px); opacity: 0; } }
+  .sub { color: var(--muted); margin: 8px 0 22px; }
+  .field { display: block; margin-bottom: 14px; }
+  .field > span { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  .or { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 13px; margin: 20px 0 14px; }
+  .or::before, .or::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+  .join-row { display: flex; gap: 8px; }
+  #codeInput { text-transform: uppercase; letter-spacing: .25em; font-weight: 700; text-align: center; }
+  #codeInput::placeholder { letter-spacing: .1em; font-weight: 500; }
+  .msg { min-height: 20px; margin: 14px 0 0; font-size: 14px; color: var(--muted); }
+  .msg.err { color: #ff8a95; }
+  .foot {
+    margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line);
+    font-size: 13px; color: var(--muted); display: flex; gap: 10px; align-items: flex-start;
+  }
+  .foot svg { flex: none; margin-top: 1px; color: var(--ok); }
+
+  /* ---------- Sala ---------- */
+  #room { height: 100%; display: grid; grid-template-columns: 300px 1fr; }
+  .side {
+    background: var(--panel); border-right: 1px solid var(--line); padding: 16px;
+    display: flex; flex-direction: column; gap: 14px; overflow-y: auto; min-height: 0;
+  }
+  .box { background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; }
+  .label { font-size: 11.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: 8px; font-weight: 600; }
+  .code-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .code { font-size: 26px; font-weight: 800; letter-spacing: .16em; font-variant-numeric: tabular-nums; user-select: text; }
+  .status { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); margin-top: 10px; }
+  .status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--warn); flex: none; }
+  .status.ok::before { background: var(--ok); }
+  .status.bad::before { background: var(--live); }
+  .check { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 12px; cursor: pointer; font-size: 14px; }
+  .check input { margin: 3px 0 0; accent-color: var(--accent); width: 16px; height: 16px; flex: none; }
+  .check small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+  #qualitySel { margin-bottom: 12px; padding: 9px 10px; }
+  .hint { font-size: 12.5px; color: var(--muted); margin: 10px 0 0; }
+  .hint.on { color: #ffb3ba; }
+  .preview { margin-top: 12px; position: relative; border-radius: 8px; overflow: hidden; background: #000; aspect-ratio: 16 / 9; }
+  .preview video { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .preview span {
+    position: absolute; left: 6px; top: 6px; font-size: 11px; font-weight: 700;
+    background: rgba(0, 0, 0, .65); padding: 2px 7px; border-radius: 999px;
+  }
+  .people-box { flex: 1; min-height: 120px; }
+  #people { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+  #people li { display: flex; align-items: center; gap: 10px; padding: 6px 2px; }
+  .av {
+    width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center;
+    font-weight: 700; font-size: 13px; color: #fff; flex: none;
+  }
+  .pname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pname small { color: var(--muted); font-weight: 400; }
+  .pill { font-size: 10.5px; font-weight: 700; padding: 2px 7px; border-radius: 999px; letter-spacing: .04em; white-space: nowrap; flex: none; }
+  .pill.live { background: var(--live); color: #fff; }
+  .pill.host { background: rgba(91, 140, 255, .16); color: #a9c1ff; }
+
+  .stage { position: relative; padding: 16px; overflow: auto; min-width: 0; min-height: 0; }
+  .empty { height: 100%; min-height: 260px; display: grid; place-items: center; text-align: center; color: var(--muted); padding: 24px; }
+  .empty svg { color: #3a4152; margin-bottom: 10px; }
+  .empty strong { display: block; color: var(--text); font-size: 17px; margin-bottom: 4px; }
+  .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr)); align-content: start; }
+  .grid.solo { height: 100%; grid-template-columns: 1fr; }
+
+  .tile { position: relative; background: #000; border-radius: var(--radius); overflow: hidden; aspect-ratio: 16 / 9; border: 1px solid var(--line); }
+  .grid.solo .tile { aspect-ratio: auto; height: 100%; min-height: 240px; }
+  .tile:fullscreen { border: 0; border-radius: 0; }
+  .tile video { width: 100%; height: 100%; object-fit: contain; display: block; background: #000; }
+  .tile-bar {
+    position: absolute; left: 0; right: 0; bottom: 0; display: flex; align-items: center; gap: 10px;
+    padding: 22px 12px 10px; background: linear-gradient(transparent, rgba(0, 0, 0, .8));
+    transition: opacity .25s;
+  }
+  .tile.idle .tile-bar { opacity: 0; }
+  .tile.idle { cursor: none; }
+  .tname { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-shadow: 0 1px 2px #000; }
+  .aud-off { font-size: 12px; color: #c9cfdb; background: rgba(255, 255, 255, .1); padding: 2px 8px; border-radius: 999px; }
+  .aud { display: flex; align-items: center; gap: 4px; }
+  .vol { width: 90px; accent-color: #fff; }
+  .ib {
+    width: 34px; height: 34px; display: grid; place-items: center; border-radius: 8px; border: 0;
+    background: rgba(255, 255, 255, .08); color: #fff; cursor: pointer; flex: none;
+  }
+  .ib:hover { background: rgba(255, 255, 255, .18); }
+  .tile-wait {
+    position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 12px; color: var(--muted); text-align: center; padding: 20px; font-size: 14px;
+  }
+  .spin { width: 28px; height: 28px; border-radius: 50%; border: 3px solid #2f3544; border-top-color: var(--accent); animation: spin 0.9s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .unmute { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); background: rgba(0, 0, 0, .75); border-color: rgba(255, 255, 255, .25); }
+
+  /* ---------- Seletor de tela/janela ---------- */
+  .modal {
+    position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; padding: 24px;
+    background: rgba(5, 6, 9, .72); backdrop-filter: blur(3px);
+  }
+  .sheet {
+    width: min(880px, 100%); max-height: calc(100vh - 48px); display: flex; flex-direction: column;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 16px;
+    box-shadow: 0 30px 80px rgba(0, 0, 0, .5); overflow: hidden;
+  }
+  .sheet header { display: flex; align-items: center; justify-content: space-between; padding: 16px 18px 0; }
+  .sheet h2 { margin: 0; font-size: 18px; }
+  .sheet header .ib { background: transparent; color: var(--muted); }
+  .sheet header .ib:hover { background: var(--panel-2); color: var(--text); }
+  .tabs { display: flex; gap: 6px; padding: 14px 18px 0; }
+  .tab {
+    background: transparent; border: 1px solid var(--line); border-radius: 999px; padding: 6px 14px;
+    cursor: pointer; color: var(--muted); font-weight: 600;
+  }
+  .tab.active { background: var(--panel-2); color: var(--text); border-color: var(--accent); }
+  .src-grid {
+    padding: 16px 18px; overflow-y: auto; display: grid; gap: 12px; min-height: 220px; align-content: start;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  }
+  .src {
+    background: var(--panel-2); border: 2px solid transparent; border-radius: 10px; padding: 8px;
+    cursor: pointer; text-align: left; display: flex; flex-direction: column; gap: 8px;
+  }
+  .src:hover { border-color: #3a4152; }
+  .src.sel { border-color: var(--accent); background: rgba(91, 140, 255, .1); }
+  .thumb { aspect-ratio: 16 / 9; background: #000; border-radius: 6px; overflow: hidden; display: grid; place-items: center; }
+  .thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .sname { display: flex; align-items: center; gap: 6px; font-size: 13px; min-width: 0; }
+  .sname img { width: 16px; height: 16px; flex: none; }
+  .sname span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .src-empty { grid-column: 1 / -1; color: var(--muted); text-align: center; padding: 48px 0; }
+  .sheet footer { display: flex; align-items: center; gap: 10px; padding: 14px 18px; border-top: 1px solid var(--line); }
+  .sheet footer .note { flex: 1; color: var(--muted); font-size: 13px; }
+
+  #toasts { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 50; max-width: min(380px, calc(100vw - 32px)); }
+  .toast {
+    background: #232835; border: 1px solid var(--line); border-left: 3px solid var(--accent);
+    padding: 10px 14px; border-radius: 10px; font-size: 14px; box-shadow: 0 10px 30px rgba(0, 0, 0, .35);
+    animation: rise .2s ease-out;
+  }
+  .toast.warn { border-left-color: var(--warn); }
+  .toast.err { border-left-color: var(--live); }
+  @keyframes rise { from { transform: translateY(8px); opacity: 0; } }
+</style>
+</head>
+<body>
+
+<!-- =================== TELA INICIAL =================== -->
+<div id="home">
+  <div class="card">
+    <div class="brand">
+      <img class="logo" src="assets/icon.png" alt="">
+      <span>Screen<b>PLAY</b></span>
+    </div>
+    <p class="sub">Crie uma sala, mande o código pros amigos e transmitam a tela — com ou sem o som do PC.</p>
+
+    <label class="field"><span>Seu nome</span>
+      <input type="text" id="nameInput" maxlength="24" placeholder="Como seus amigos te veem" autocomplete="off">
+    </label>
+    <button id="createBtn" class="btn primary big" type="button">Criar sala</button>
+
+    <div class="or">ou entre numa sala</div>
+    <div class="join-row">
+      <input type="text" id="codeInput" maxlength="6" placeholder="CÓDIGO" autocomplete="off" spellcheck="false" aria-label="Código da sala">
+      <button id="joinBtn" class="btn" type="button">Entrar</button>
+    </div>
+    <p id="homeMsg" class="msg" role="status"></p>
+
+    <div class="foot">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+      <span>O microfone e a câmera nunca são usados. A transmissão vai direto de um PC pro outro.</span>
+    </div>
+  </div>
+  <div id="appVersion" class="app-ver"></div>
+</div>
+
+<!-- =================== SALA =================== -->
+<div id="room" class="hidden">
+  <aside class="side">
+    <div class="brand small">
+      <img class="logo" src="assets/icon.png" alt="">
+      <span>Screen<b>PLAY</b></span>
+    </div>
+
+    <section class="box">
+      <div class="label">Código da sala</div>
+      <div class="code-row">
+        <span id="roomCode" class="code"></span>
+        <button id="copyCodeBtn" class="btn sm" type="button">Copiar</button>
+      </div>
+      <div id="netStatus" class="status">Conectando…</div>
+    </section>
+
+    <section class="box">
+      <div class="label">Transmitir</div>
+      <label class="check">
+        <input type="checkbox" id="audioChk" checked>
+        <span>Com som do PC
+          <small id="audioNote">Envia o que toca no PC (jogo, vídeo, música). O microfone nunca vai junto.</small>
+        </span>
+      </label>
+      <select id="qualitySel" aria-label="Qualidade">
+        <option value="720-30">720p · 30 fps (internet fraca)</option>
+        <option value="1080-30" selected>1080p · 30 fps</option>
+        <option value="1080-60">1080p · 60 fps (jogos e vídeos)</option>
+      </select>
+      <button id="shareBtn" class="btn primary wide" type="button">Transmitir minha tela</button>
+      <p id="shareHint" class="hint"></p>
+      <div id="selfBox" class="preview hidden">
+        <video id="selfPreview" muted playsinline autoplay></video>
+        <span>Sua prévia</span>
+      </div>
+    </section>
+
+    <section class="box people-box">
+      <div class="label">Na sala (<span id="count">0</span>)</div>
+      <ul id="people"></ul>
+    </section>
+
+    <button id="leaveBtn" class="btn danger wide" type="button">Sair da sala</button>
+  </aside>
+
+  <main class="stage">
+    <div id="empty" class="empty">
+      <div>
+        <svg viewBox="0 0 24 24" width="56" height="56" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+        <strong>Ninguém está transmitindo agora</strong>
+        Quando alguém da sala transmitir, a tela aparece aqui.
+      </div>
+    </div>
+    <div id="grid" class="grid"></div>
+  </main>
+</div>
+
+<!-- =================== SELETOR DE TELA/JANELA =================== -->
+<div id="picker" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="pickerTitle">
+  <div class="sheet">
+    <header>
+      <h2 id="pickerTitle">O que você quer transmitir?</h2>
+      <button id="pickClose" class="ib" type="button" title="Fechar"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+    </header>
+    <div class="tabs">
+      <button class="tab active" data-kind="screen" type="button">Tela inteira</button>
+      <button class="tab" data-kind="window" type="button">Uma janela</button>
+    </div>
+    <div id="srcGrid" class="src-grid"></div>
+    <footer>
+      <span id="pickNote" class="note"></span>
+      <button id="pickCancel" class="btn" type="button">Cancelar</button>
+      <button id="pickGo" class="btn primary" type="button" disabled>Transmitir</button>
+    </footer>
+  </div>
+</div>
+
+<!-- =================== ATUALIZAÇÃO PRONTA =================== -->
+<div id="updateBar" class="update-bar hidden" role="status">
+  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>
+  <span id="updateText"></span>
+  <button id="updateBtn" class="btn sm primary" type="button">Reiniciar agora</button>
+  <button id="updateLater" class="ib" type="button" title="Depois (instala quando fechar o app)"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+</div>
+
+<div id="toasts" aria-live="polite"></div>
+
+<script src="node_modules/peerjs/dist/peerjs.min.js"></script>
+<script src="renderer.js"></script>
+</body>
+</html>
