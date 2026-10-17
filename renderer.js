@@ -6,10 +6,12 @@
 const PREFIX = 'screenplay-v2-';
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 // hint 'detail' = segura a resolução. ('motion' derrubava 1080p60 para 640x360 enquanto a banda subia.)
+// bitrate = teto. Com 10 Mbps no 1080p60, cenas pesadas faziam o codificador jogar quadros fora
+// (caía para ~22 fps); com 20 Mbps não houve queda. Tela parada continua usando só ~2–3 Mbps.
 const QUALITY = {
-  '720-30':  { w: 1280, h: 720,  fps: 30, bitrate: 3000000,  hint: 'detail' },
-  '1080-30': { w: 1920, h: 1080, fps: 30, bitrate: 6000000,  hint: 'detail' },
-  '1080-60': { w: 1920, h: 1080, fps: 60, bitrate: 10000000, hint: 'detail' },
+  '720-30':  { w: 1280, h: 720,  fps: 30, bitrate: 6000000,  hint: 'detail' },
+  '1080-30': { w: 1920, h: 1080, fps: 30, bitrate: 12000000, hint: 'detail' },
+  '1080-60': { w: 1920, h: 1080, fps: 60, bitrate: 20000000, hint: 'detail' },
 };
 const REACTIONS = ['😂', '🔥', '👍', '😮', '❤️'];
 const ICON = {
@@ -205,7 +207,7 @@ function announceViewer(id) {
 //  - quem transmite escolhe o codificador: 'gpu' prefere H.264, que no Windows é codificado pela
 //    placa de vídeo (NVIDIA/AMD/Intel); 'cpu' prefere VP8, codificado pelo processador.
 //    Quem assiste não reordena nada (a resposta segue a ordem de quem transmite).
-const VIDEO_BITRATES = 'x-google-start-bitrate=3000;x-google-min-bitrate=1000;x-google-max-bitrate=12000';
+const VIDEO_BITRATES = 'x-google-start-bitrate=3000;x-google-min-bitrate=1000;x-google-max-bitrate=25000';
 function tuneSdp(sdp, encoder) {
   const lines = sdp.split('\r\n');
   const videoPts = new Set();

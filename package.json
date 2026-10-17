@@ -1,7 +1,7 @@
 {
   "name": "screenplay",
   "productName": "ScreenPLAY",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Transmita a tela do PC para seus amigos, com ou sem som (sem microfone).",
   "main": "main.js",
   "author": "ScreenPLAY",
