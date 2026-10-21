@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://0.peerjs.com wss://0.peerjs.com; media-src 'self' blob: mediastream:">
 <title>ScreenPLAY</title>
+<script src="theme-boot.js"></script>
 <style>
   :root {
     /* Preto, branco e cinza. O vermelho fica só para "AO VIVO" e erros. */
@@ -18,7 +19,7 @@
     --muted: #9a9a9a;
     --faint: #5c5c5c;
     --accent: #f2f2f2;
-    --accent-2: #d4d4d4;
+    --accent-2: color-mix(in srgb, var(--accent) 86%, var(--bg));   /* hover: sai da cor do botão */
     --on-accent: #0a0a0a;
     --live: #ff4d5e;
     /* Estado da conexão / ping */
@@ -26,6 +27,7 @@
     --warn: #f0b232;
     --bad: #ed4245;
     --radius: 12px;
+    color-scheme: dark;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
@@ -51,9 +53,9 @@
   .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
   .btn.primary:hover { background: var(--accent-2); border-color: var(--accent-2); }
   .btn.live { background: var(--live); border-color: var(--live); color: #fff; }
-  .btn.live:hover { background: #e8404f; }
+  .btn.live:hover { background: color-mix(in srgb, var(--live) 88%, #000); }
   .btn.danger { background: transparent; border-color: var(--line-2); color: var(--muted); }
-  .btn.danger:hover { background: rgba(255, 255, 255, .05); color: var(--text); }
+  .btn.danger:hover { background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--text); }
   .btn.wide { width: 100%; }
   .btn.big { width: 100%; padding: 13px; font-size: 16px; }
   .btn.sm { padding: 6px 10px; font-size: 13px; }
@@ -70,7 +72,7 @@
   #home {
     min-height: 100%; display: grid; place-items: center; padding: 24px 16px;
     background:
-      radial-gradient(1000px 560px at 50% -12%, rgba(255, 255, 255, .07), transparent 60%),
+      radial-gradient(1000px 560px at 50% -12%, color-mix(in srgb, var(--text) 7%, transparent), transparent 60%),
       var(--bg);
   }
   .card {
@@ -103,7 +105,7 @@
   #codeInput { text-transform: uppercase; letter-spacing: .25em; font-weight: 700; text-align: center; }
   #codeInput::placeholder { letter-spacing: .1em; font-weight: 500; }
   .msg { min-height: 20px; margin: 14px 0 0; font-size: 14px; color: var(--muted); }
-  .msg.err { color: #ff8a95; }
+  .msg.err { color: var(--bad); }
   .foot {
     margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line);
     font-size: 13px; color: var(--muted); display: flex; gap: 10px; align-items: flex-start;
@@ -115,7 +117,7 @@
   .side {
     background: var(--panel); border-right: 1px solid var(--line); padding: 16px;
     display: flex; flex-direction: column; gap: 14px; overflow-y: auto; min-height: 0;
-    scrollbar-width: thin; scrollbar-color: #2e2e2e transparent;
+    scrollbar-width: thin; scrollbar-color: var(--line-2) transparent;
   }
   .box { background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; }
   .label { font-size: 11.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: 8px; font-weight: 600; }
@@ -123,9 +125,9 @@
   .code { font-size: 26px; font-weight: 800; letter-spacing: .16em; font-variant-numeric: tabular-nums; user-select: text; }
   .status { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); margin-top: 10px; }
   .status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
-  .status.ok::before { background: var(--good); box-shadow: 0 0 0 3px rgba(59, 165, 93, .2); }
-  .status.bad::before { background: var(--bad); box-shadow: 0 0 0 3px rgba(237, 66, 69, .2); }
-  .status.warn::before { background: var(--warn); box-shadow: 0 0 0 3px rgba(240, 178, 50, .2); }
+  .status.ok::before { background: var(--good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 22%, transparent); }
+  .status.bad::before { background: var(--bad); box-shadow: 0 0 0 3px color-mix(in srgb, var(--bad) 22%, transparent); }
+  .status.warn::before { background: var(--warn); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 22%, transparent); }
 
   /* Ícone de sinal com o ping (passe o mouse para ver os números) */
   .people-head { display: flex; align-items: center; justify-content: space-between; }
@@ -166,11 +168,11 @@
   .pname small { color: var(--muted); font-weight: 400; }
   .pill { font-size: 10.5px; font-weight: 700; padding: 2px 7px; border-radius: 999px; letter-spacing: .04em; white-space: nowrap; flex: none; }
   .pill.live { background: var(--live); color: #fff; }
-  .pill.host { background: rgba(255, 255, 255, .1); color: #d4d4d4; }
+  .pill.host { background: color-mix(in srgb, var(--text) 10%, transparent); color: color-mix(in srgb, var(--text) 82%, var(--bg)); }
 
   .stage { position: relative; padding: 16px; overflow: auto; min-width: 0; min-height: 0; }
   .empty { height: 100%; min-height: 260px; display: grid; place-items: center; text-align: center; color: var(--muted); padding: 24px; }
-  .empty svg { color: #333; margin-bottom: 10px; }
+  .empty svg { color: var(--line-2); margin-bottom: 10px; }
   .empty strong { display: block; color: var(--text); font-size: 17px; margin-bottom: 4px; }
   .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr)); align-content: start; }
   .grid.solo { height: 100%; grid-template-columns: 1fr; }
@@ -206,10 +208,11 @@
   /* Cartão "Assistir" de quem está transmitindo (você escolhe quem assistir) */
   .card-stream {
     display: grid; place-items: center;
-    background: radial-gradient(420px 240px at 50% 40%, rgba(255, 255, 255, .06), transparent 70%), #0d0d0d;
+    background: radial-gradient(420px 240px at 50% 40%, color-mix(in srgb, var(--text) 6%, transparent), transparent 70%),
+      color-mix(in srgb, var(--bg) 60%, var(--panel));
   }
   .cs { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 20px; text-align: center; }
-  .cs svg { color: #3a3a3a; }
+  .cs svg { color: var(--line-2); }
   .cs-name { font-size: 18px; font-weight: 700; }
   .cs-meta { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
   .cs .btn { min-width: 150px; margin-top: 4px; }
@@ -267,7 +270,7 @@
     cursor: pointer; text-align: left; display: flex; flex-direction: column; gap: 8px;
   }
   .src:hover { border-color: var(--line-2); }
-  .src.sel { border-color: var(--accent); background: rgba(255, 255, 255, .06); }
+  .src.sel { border-color: var(--accent); background: color-mix(in srgb, var(--text) 6%, transparent); }
   .thumb { aspect-ratio: 16 / 9; background: #000; border-radius: 6px; overflow: hidden; display: grid; place-items: center; }
   .thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
   .sname { display: flex; align-items: center; gap: 6px; font-size: 13px; min-width: 0; }
@@ -276,6 +279,79 @@
   .src-empty { grid-column: 1 / -1; color: var(--muted); text-align: center; padding: 48px 0; }
   .sheet footer { display: flex; align-items: center; gap: 10px; padding: 14px 18px; border-top: 1px solid var(--line); }
   .sheet footer .note { flex: 1; color: var(--muted); font-size: 13px; }
+
+  /* ---------- Engrenagem e configurações ---------- */
+  .brand-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .gear-btn {
+    width: 34px; height: 34px; display: grid; place-items: center; flex: none; border: 0; border-radius: 9px;
+    background: transparent; color: var(--muted); cursor: pointer; transition: background .15s, color .15s, transform .35s;
+  }
+  .gear-btn:hover { background: var(--panel-2); color: var(--text); transform: rotate(60deg); }
+  .set-sheet { width: min(940px, 100%); height: min(640px, calc(100vh - 48px)); flex-direction: row; }
+  .set-nav {
+    width: 210px; flex: none; display: flex; flex-direction: column; gap: 3px; padding: 18px 12px;
+    background: var(--panel-2); border-right: 1px solid var(--line);
+  }
+  .set-title { padding: 4px 10px 12px; font-size: 11.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+  .set-tab {
+    display: flex; align-items: center; gap: 10px; padding: 9px 10px; border: 0; border-radius: 8px;
+    background: transparent; color: var(--muted); font-weight: 600; text-align: left; cursor: pointer;
+  }
+  .set-tab:hover, .set-tab.active { background: var(--panel-3); color: var(--text); }
+  .set-body {
+    position: relative; flex: 1; min-width: 0; overflow-y: auto; padding: 22px 28px 28px;
+    scrollbar-width: thin; scrollbar-color: var(--line-2) transparent;
+  }
+  .set-close { position: absolute; top: 14px; right: 14px; background: transparent; color: var(--muted); }
+  .set-close:hover { background: var(--panel-2); color: var(--text); }
+  .set-page h2 { margin: 0 0 6px; font-size: 20px; }
+  .set-lead { margin: 0 0 8px; font-size: 13.5px; color: var(--muted); }
+  .set-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 14px 0; border-bottom: 1px solid var(--line); }
+  .set-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .set-text b { font-weight: 600; }
+  .set-text small { font-size: 12.5px; color: var(--muted); }
+  .set-row input[type=text], .set-row select { width: 270px; flex: none; }
+  .vol-row { display: flex; align-items: center; gap: 10px; flex: none; }
+  .vol-row input[type=range] { width: 170px; accent-color: var(--accent); }
+  .vol-num { width: 42px; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .switch { position: relative; width: 42px; height: 24px; flex: none; }
+  .switch input {
+    position: absolute; inset: 0; margin: 0; appearance: none; border-radius: 999px;
+    background: var(--line-2); cursor: pointer; transition: background .15s;
+  }
+  .switch input::after {
+    content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%;
+    background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, .35); transition: transform .15s;
+  }
+  .switch input:checked { background: var(--good); }
+  .switch input:checked::after { transform: translateX(18px); }
+  .switch input:disabled { opacity: .45; cursor: not-allowed; }
+  .set-sub { margin: 18px 0 10px; font-size: 11.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+  .preset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
+  .preset {
+    display: flex; flex-direction: column; gap: 8px; padding: 9px; border: 2px solid var(--line); border-radius: 10px;
+    background: var(--panel-2); font-size: 13px; font-weight: 600; text-align: left; cursor: pointer;
+  }
+  .preset:hover { border-color: var(--line-2); }
+  .preset.sel { border-color: var(--accent); }
+  .preset .sw { display: flex; height: 32px; overflow: hidden; border-radius: 6px; border: 1px solid rgba(127, 127, 127, .3); }
+  .preset .sw i { flex: 1; }
+  .color-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px 12px; }
+  .color-row {
+    display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 8px;
+    background: var(--panel-2); border: 1px solid var(--line);
+  }
+  .color-row span { flex: 1; min-width: 0; font-size: 13px; }
+  .color-row input[type=color] { width: 34px; height: 28px; padding: 0; border: 1px solid var(--line-2); border-radius: 6px; background: none; cursor: pointer; }
+  .color-row input[type=color]::-webkit-color-swatch-wrapper { padding: 2px; }
+  .color-row input[type=color]::-webkit-color-swatch { border: 0; border-radius: 4px; }
+  .color-row input.hex { width: 86px; padding: 6px 8px; font: 12.5px Consolas, monospace; text-transform: uppercase; }
+  .set-actions { display: flex; gap: 10px; margin-top: 16px; }
+  .about { display: flex; align-items: center; gap: 14px; padding: 8px 0 14px; border-bottom: 1px solid var(--line); }
+  .about .logo { width: 56px; height: 56px; }
+  .about-name { font-size: 20px; color: var(--muted); }
+  .about-name b { color: var(--text); font-weight: 800; }
+  .about-ver { margin-top: 2px; font-size: 13px; color: var(--muted); }
 
   #toasts { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 50; max-width: min(380px, calc(100vw - 32px)); }
   .toast {
@@ -293,9 +369,12 @@
 <!-- =================== TELA INICIAL =================== -->
 <div id="home">
   <div class="card">
-    <div class="brand">
-      <img class="logo" src="assets/icon.png" alt="">
-      <span>Screen<b>PLAY</b></span>
+    <div class="brand-row">
+      <div class="brand">
+        <img class="logo" src="assets/icon.png" alt="">
+        <span>Screen<b>PLAY</b></span>
+      </div>
+      <button class="gear-btn" type="button" data-settings title="Configurações" aria-label="Configurações"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg></button>
     </div>
     <p class="sub">Crie uma sala, mande o código pros amigos e transmitam a tela — com ou sem o som do PC.</p>
 
@@ -322,9 +401,12 @@
 <!-- =================== SALA =================== -->
 <div id="room" class="hidden">
   <aside class="side">
-    <div class="brand small">
-      <img class="logo" src="assets/icon.png" alt="">
-      <span>Screen<b>PLAY</b></span>
+    <div class="brand-row">
+      <div class="brand small">
+        <img class="logo" src="assets/icon.png" alt="">
+        <span>Screen<b>PLAY</b></span>
+      </div>
+      <button class="gear-btn" type="button" data-settings title="Configurações" aria-label="Configurações"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg></button>
     </div>
 
     <section class="box">
@@ -404,6 +486,94 @@
       <button id="pickCancel" class="btn" type="button">Cancelar</button>
       <button id="pickGo" class="btn primary" type="button" disabled>Transmitir</button>
     </footer>
+  </div>
+</div>
+
+<!-- =================== CONFIGURAÇÕES (engrenagem) =================== -->
+<div id="settings" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="setTitle">
+  <div class="sheet set-sheet">
+    <nav class="set-nav">
+      <div id="setTitle" class="set-title">Configurações</div>
+      <button class="set-tab active" data-tab="geral" type="button"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3M14 2v4M8 10v4M16 18v4"/></svg><span>Geral</span></button>
+      <button class="set-tab" data-tab="transmissao" type="button"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg><span>Transmissão</span></button>
+      <button class="set-tab" data-tab="sons" type="button"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M19 5a10 10 0 0 1 0 14"/></svg><span>Sons</span></button>
+      <button class="set-tab" data-tab="aparencia" type="button"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="13.5" cy="6.5" r="1.2"/><circle cx="17.5" cy="10.5" r="1.2"/><circle cx="8.5" cy="7.5" r="1.2"/><circle cx="6.5" cy="12.5" r="1.2"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.93 0 1.65-.75 1.65-1.69 0-.44-.18-.84-.44-1.13-.29-.29-.44-.65-.44-1.13a1.64 1.64 0 0 1 1.67-1.67h2c3.05 0 5.55-2.5 5.55-5.55C21.97 6.01 17.46 2 12 2z"/></svg><span>Personalizar</span></button>
+      <button class="set-tab" data-tab="sobre" type="button"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg><span>Sobre</span></button>
+    </nav>
+    <div class="set-body">
+      <button id="setClose" class="ib set-close" type="button" title="Fechar (Esc)"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+
+      <section class="set-page" data-page="geral">
+        <h2>Geral</h2>
+        <label class="set-row">
+          <span class="set-text"><b>Seu nome</b><small>Como seus amigos te veem nas salas.</small></span>
+          <input type="text" id="setName" maxlength="24" autocomplete="off" spellcheck="false">
+        </label>
+        <div class="set-row">
+          <span class="set-text"><b>Iniciar junto com o Windows</b><small id="autoStartNote">O ScreenPLAY abre sozinho quando você liga o PC.</small></span>
+          <label class="switch"><input type="checkbox" id="setAutoStart" aria-label="Iniciar junto com o Windows"></label>
+        </div>
+        <div class="set-row">
+          <span class="set-text"><b>Abrir minimizado</b><small>Quando iniciar com o Windows, já abre minimizado na barra de tarefas.</small></span>
+          <label class="switch"><input type="checkbox" id="setMinimized" aria-label="Abrir minimizado"></label>
+        </div>
+      </section>
+
+      <section class="set-page hidden" data-page="transmissao">
+        <h2>Transmissão</h2>
+        <p class="set-lead">O que já vem escolhido quando você clica em “Transmitir minha tela”.</p>
+        <div class="set-row">
+          <span class="set-text"><b>Qualidade</b><small>Com upload fraco, prefira 1080p · 30 fps ou 720p.</small></span>
+          <select id="setQuality" aria-label="Qualidade padrão"></select>
+        </div>
+        <div class="set-row">
+          <span class="set-text"><b>Codificador de vídeo</b><small>A placa de vídeo deixa o processador livre para o jogo.</small></span>
+          <select id="setEncoder" aria-label="Codificador padrão"></select>
+        </div>
+        <div class="set-row">
+          <span class="set-text"><b>Transmitir com som do PC</b><small>Tela inteira: sem o Discord. Uma janela: só o som dela. Nunca o microfone.</small></span>
+          <label class="switch"><input type="checkbox" id="setAudio" aria-label="Transmitir com som do PC"></label>
+        </div>
+      </section>
+
+      <section class="set-page hidden" data-page="sons">
+        <h2>Sons</h2>
+        <div class="set-row">
+          <span class="set-text"><b>Volume dos avisos</b><small>Alguém entrar ou sair, começar a transmitir, alguém assistir.</small></span>
+          <div class="vol-row">
+            <input type="range" id="setSfxVol" min="0" max="100" step="5" aria-label="Volume dos avisos">
+            <span id="setSfxVolText" class="vol-num"></span>
+            <button id="setSfxTest" class="btn sm" type="button">Testar</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="set-page hidden" data-page="aparencia">
+        <h2>Personalizar ScreenPLAY</h2>
+        <p class="set-lead">Escolha um tema pronto ou mude cada cor — a mudança aparece na hora. Vale só para o seu ScreenPLAY.</p>
+        <div class="set-sub">Temas prontos</div>
+        <div id="presetGrid" class="preset-grid"></div>
+        <div class="set-sub">Cores</div>
+        <div id="colorGrid" class="color-grid"></div>
+        <div class="set-actions"><button id="themeReset" class="btn" type="button">Restaurar padrão</button></div>
+      </section>
+
+      <section class="set-page hidden" data-page="sobre">
+        <h2>Sobre</h2>
+        <div class="about">
+          <img class="logo" src="assets/icon.png" alt="">
+          <div><div class="about-name">Screen<b>PLAY</b></div><div id="aboutVersion" class="about-ver"></div></div>
+        </div>
+        <div class="set-row">
+          <span class="set-text"><b>Atualizações</b><small id="updateStatus">O ScreenPLAY se atualiza sozinho sempre que abre.</small></span>
+          <button id="checkUpdateBtn" class="btn" type="button">Procurar atualização agora</button>
+        </div>
+        <div class="set-row">
+          <span class="set-text"><b>Novidades</b><small>O que mudou em cada versão.</small></span>
+          <button id="openReleases" class="btn" type="button">Ver no GitHub</button>
+        </div>
+      </section>
+    </div>
   </div>
 </div>
 

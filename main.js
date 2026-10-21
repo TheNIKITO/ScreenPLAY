@@ -1,9 +1,10 @@
-const { app, BrowserWindow, Menu, desktopCapturer, ipcMain, powerSaveBlocker, screen, session } = require('electron');
+const { app, BrowserWindow, Menu, desktopCapturer, ipcMain, powerSaveBlocker, screen, session, shell } = require('electron');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { autoUpdater } = require('electron-updater');
+const presence = require('./discord');
 
 // Permite abrir duas cópias separadas no mesmo PC (útil para testar): TAV_PROFILE=b
 if (process.env.TAV_PROFILE) {
@@ -12,6 +13,8 @@ if (process.env.TAV_PROFILE) {
 app.setAppUserModelId('com.screenplay.app');
 
 const ICON = path.join(__dirname, 'assets', 'icon.png');
+// Aplicativo "ScreenPLAY" no Discord Developer Portal (o nome dele aparece em "Jogando ScreenPLAY").
+const DISCORD_APP_ID = '1562274053866127552';
 const PRELOAD = path.join(__dirname, 'preload.js');
 const CHECK_TIMEOUT = 15000;            // GitHub não respondeu: abre assim mesmo
 const STALL_TIMEOUT = 30000;            // download parado: abre e termina em segundo plano
@@ -24,6 +27,43 @@ let readyVersion = null;     // atualização baixada esperando reiniciar
 let pendingSource = null;    // fonte escolhida no seletor, usada no próximo getDisplayMedia
 let awakeBlocker = null;
 let audioProc = null;        // ScreenPLAYAudio.exe (som app por app, sem o Discord)
+
+// Aberto pelo Windows ao ligar o PC com "Abrir minimizado" ligado.
+const launchedMinimized = process.argv.includes('--minimized');
+const RELEASES_URL = 'https://github.com/TheNIKITO/ScreenPLAY/releases';
+
+// Configurações que o lado Windows precisa antes da página abrir (salvas em userData/settings.json).
+let settings = { startMinimized: false, windowBg: '#0a0a0a' };
+function settingsFile() { return path.join(app.getPath('userData'), 'settings.json'); }
+function loadSettings() {
+  try { settings = { ...settings, ...JSON.parse(fs.readFileSync(settingsFile(), 'utf8')) }; } catch { /* primeira vez */ }
+}
+function saveSettings() {
+  try { fs.writeFileSync(settingsFile(), JSON.stringify(settings, null, 2)); } catch (err) { console.warn('[settings]', err.message); }
+}
+const windowBg = () => (/^#[0-9a-f]{6}$/i.test(settings.windowBg) ? settings.windowBg : '#0a0a0a');
+
+// Iniciar com o Windows: só no app instalado (no modo de desenvolvimento abriria o Electron puro).
+const canAutoStart = () => app.isPackaged;
+const loginArgs = () => (settings.startMinimized ? ['--minimized'] : []);
+function getAppSettings() {
+  const openAtLogin = canAutoStart()
+    ? app.getLoginItemSettings({ path: process.execPath, args: loginArgs() }).openAtLogin
+    : false;
+  return { openAtLogin, startMinimized: !!settings.startMinimized, canAutoStart: canAutoStart(), version: app.getVersion() };
+}
+function setAppSettings(patch) {
+  const before = getAppSettings();
+  if (patch && typeof patch.startMinimized === 'boolean') settings.startMinimized = patch.startMinimized;
+  if (patch && typeof patch.windowBg === 'string' && /^#[0-9a-f]{6}$/i.test(patch.windowBg)) settings.windowBg = patch.windowBg;
+  saveSettings();
+  const openAtLogin = patch && typeof patch.openAtLogin === 'boolean' ? patch.openAtLogin : before.openAtLogin;
+  if (canAutoStart()) {
+    // Mesmo nome de registro sempre: trocar "abrir minimizado" só reescreve a linha de comando.
+    app.setLoginItemSettings({ openAtLogin, path: process.execPath, args: loginArgs() });
+  }
+  return getAppSettings();
+}
 
 // Apps que nunca entram no som da transmissão de tela inteira.
 const AUDIO_EXCLUDE_NAMES = ['discord.exe', 'discordptb.exe', 'discordcanary.exe', 'screenplay.exe'];
@@ -42,12 +82,17 @@ if (!gotLock) {
   });
   app.whenReady().then(start);
   app.on('window-all-closed', () => app.quit());
-  app.on('will-quit', stopAppAudio);
+  app.on('will-quit', () => {
+    stopAppAudio();
+    presence.stop();
+  });
 }
 
 async function start() {
   Menu.setApplicationMenu(null);
+  loadSettings();
   registerIpc();
+  presence.start(DISCORD_APP_ID, (msg) => console.log('[discord]', msg));
   registerDisplayMedia();
   createSplash();
 
@@ -78,13 +123,13 @@ function createSplash() {
     show: false,
     center: true,
     title: 'ScreenPLAY',
-    backgroundColor: '#0a0a0a',
+    backgroundColor: windowBg(),
     icon: ICON,
     webPreferences: { preload: PRELOAD, contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   lockDown(splash);
   splash.webContents.on('did-finish-load', sendSplash);
-  splash.once('ready-to-show', () => splash.show());
+  splash.once('ready-to-show', () => { if (!launchedMinimized) splash.show(); });   // minimizado: sem tela de abertura
   splash.on('closed', () => { splash = null; });
   splash.loadFile(path.join(__dirname, 'splash.html'));
 }
@@ -105,7 +150,7 @@ function createMain() {
     minHeight: 600,
     show: false,
     title: 'ScreenPLAY',
-    backgroundColor: '#0a0a0a',
+    backgroundColor: windowBg(),
     icon: ICON,
     autoHideMenuBar: true,
     webPreferences: {
@@ -120,7 +165,8 @@ function createMain() {
   lockDown(mainWin);
   mainWin.webContents.on('did-finish-load', notifyUpdateReady);
   mainWin.once('ready-to-show', () => {
-    mainWin.show();
+    if (launchedMinimized) mainWin.minimize();   // aparece só na barra de tarefas
+    else mainWin.show();
     if (splash && !splash.isDestroyed()) splash.close();
   });
   mainWin.on('closed', () => {
@@ -225,6 +271,40 @@ async function hardwareInfo() {
 function registerIpc() {
   ipcMain.handle('tav:version', () => app.getVersion());
   ipcMain.handle('tav:hardware', () => hardwareInfo());
+  ipcMain.handle('tav:settings-get', () => getAppSettings());
+  ipcMain.handle('tav:settings-set', (_e, patch) => setAppSettings(patch || {}));
+
+  // "Procurar atualização agora" (Configurações → Sobre). Se tiver, baixa em segundo plano e o
+  // aviso "Versão X pronta" aparece quando terminar.
+  ipcMain.handle('tav:check-update', async () => {
+    if (!updatesEnabled()) return { status: 'dev', version: app.getVersion() };
+    if (readyVersion) return { status: 'ready', version: readyVersion };
+    try {
+      const result = await autoUpdater.checkForUpdates();
+      const latest = result && result.updateInfo && result.updateInfo.version;
+      const available = result && typeof result.isUpdateAvailable === 'boolean'
+        ? result.isUpdateAvailable
+        : !!latest && latest !== app.getVersion();
+      return available ? { status: 'available', version: latest } : { status: 'latest', version: app.getVersion() };
+    } catch (err) {
+      return { status: 'error', message: err && err.message };
+    }
+  });
+
+  // Só abre a página de versões do ScreenPLAY no navegador.
+  ipcMain.on('tav:open-releases', () => { shell.openExternal(RELEASES_URL); });
+
+  // Status no Discord (Rich Presence). A página manda só o estado; o texto é montado em discord.js.
+  ipcMain.on('tav:presence', (_e, state) => {
+    if (!state || typeof state !== 'object') return presence.set(null);
+    presence.set({
+      mode: ['share', 'watch', 'room'].includes(state.mode) ? state.mode : null,
+      who: String(state.who || '').slice(0, 60),
+      people: Number(state.people) || 1,
+      viewers: Number(state.viewers) || 0,
+      since: Number(state.since) || 0,
+    });
+  });
 
   ipcMain.on('tav:restart-update', () => {
     if (readyVersion) autoUpdater.quitAndInstall(true, true);

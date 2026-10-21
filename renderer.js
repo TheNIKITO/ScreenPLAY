@@ -57,6 +57,7 @@ const S = {
   encoderUsed: null,      // o que o navegador realmente está usando: 'gpu' | 'cpu'
   hw: { cpu: '', gpu: '' },   // marcas detectadas (Intel / AMD / NVIDIA)
   pings: new Map(),       // id -> ping em ms (conexões diretas que eu tenho com cada pessoa)
+  since: { room: 0, share: 0, watch: 0 },   // quando entrei / comecei a transmitir / a assistir (Discord)
   outCalls: new Map(),    // id -> { call, seq }  (quem está recebendo minha tela)
   tiles: new Map(),       // id -> tile  (telas que estou assistindo)
 };
@@ -152,8 +153,42 @@ function updateAwake() {
   if (IS_APP) window.tav.keepAwake(!!S.localStream || S.tiles.size > 0);
 }
 
+// ---------------- status no Discord (Rich Presence) ----------------
+// Transmitindo tem prioridade; senão, assistindo alguém; senão, só na sala. Manda só quando muda
+// (o Discord limita a poucas atualizações por segundo).
+let presenceTimer = null;
+let presenceLast = '';
+function updatePresence() {
+  if (!IS_APP || !window.tav.presence) return;
+  clearTimeout(presenceTimer);
+  presenceTimer = setTimeout(() => {
+    let state = null;
+    if (S.code && S.peer && !S.leaving) {
+      const people = S.view.size || 1;
+      if (S.localStream) {
+        state = { mode: 'share', viewers: S.watchers.size, people, since: S.since.share };
+      } else if (S.tiles.size) {
+        const names = [...S.tiles.keys()].map(nameOf);
+        const who = names.length === 1 ? names[0] : names.slice(0, -1).join(', ') + ' e ' + names[names.length - 1];
+        state = { mode: 'watch', who, people, since: S.since.watch };
+      } else {
+        state = { mode: 'room', people, since: S.since.room };
+      }
+    }
+    const key = JSON.stringify(state);
+    if (key === presenceLast) return;
+    presenceLast = key;
+    window.tav.presence(state);
+  }, 800);
+}
+
 // ---------------- sons de aviso (estilo Discord, gerados na hora) ----------------
 let sfxCtx = null;
+// Volume dos avisos (Configurações → Sons), de 0 a 1.
+let sfxVolume = (() => {
+  const v = store('tav-sfx-vol');
+  return v === null ? 1 : Math.min(1, Math.max(0, Number(v) / 100 || 0));
+})();
 const SFX = {
   join:    [[587.33, 0, 0.16], [880, 0.09, 0.24]],                                   // alguém entrou
   leave:   [[880, 0, 0.16], [523.25, 0.09, 0.26]],                                   // alguém saiu
@@ -162,7 +197,7 @@ const SFX = {
   viewer:  [[1318.5, 0, 0.12], [1760, 0.06, 0.2]],                                  // alguém começou a te assistir
 };
 function sfx(name) {
-  if (!SFX[name]) return;
+  if (!SFX[name] || sfxVolume <= 0) return;
   try {
     if (!sfxCtx) sfxCtx = new AudioContext();
     if (sfxCtx.state === 'suspended') sfxCtx.resume();
@@ -173,7 +208,7 @@ function sfx(name) {
       osc.type = name === 'join' || name === 'leave' ? 'triangle' : 'sine';
       osc.frequency.value = freq;
       gain.gain.setValueAtTime(0.0001, now + at);
-      gain.gain.exponentialRampToValueAtTime(0.16, now + at + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.16 * sfxVolume, now + at + 0.015);
       gain.gain.exponentialRampToValueAtTime(0.0001, now + at + dur);
       osc.connect(gain).connect(sfxCtx.destination);
       osc.start(now + at);
@@ -352,6 +387,7 @@ function roomAccept(room, conn) {
     } else if (msg.t === 'state') {
       const p = room.roster.get(pid);
       if (!p) return;
+      if (typeof msg.name === 'string' && msg.name.trim()) p.name = cleanName(msg.name);
       p.sharing = !!msg.sharing;
       p.seq = Number(msg.seq) || 0;
       p.audio = !!msg.audio;
@@ -433,7 +469,7 @@ function sendRoom(msg) {
 const relay = (to, msg) => sendRoom({ t: 'relay', to, msg });
 const cast = (msg) => sendRoom({ t: 'cast', msg });
 function sendState() {
-  sendRoom({ t: 'state', sharing: !!S.localStream, seq: S.seq, audio: hasAudio() });
+  sendRoom({ t: 'state', name: S.myName, sharing: !!S.localStream, seq: S.seq, audio: hasAudio() });
 }
 
 // A conexão com a sala caiu: o dono saiu (ou a internet piscou). Alguém assume a sala.
@@ -557,6 +593,7 @@ function enterRoom() {
   $('home').classList.add('hidden');
   $('room').classList.remove('hidden');
   $('roomCode').textContent = S.code;
+  S.since = { room: Date.now(), share: 0, watch: 0 };
   setNet('Conectado', 'ok');
   renderPeople();
   renderShareUI();
@@ -590,6 +627,7 @@ function leaveRoom(reason) {
   $('home').classList.remove('hidden');
   homeMsg(reason || '', !!reason);
   updateAwake();
+  updatePresence();
 }
 
 // ---------------- ping ----------------
@@ -752,6 +790,7 @@ function renderPeople() {
   }
   $('count').textContent = S.view.size;
   renderPing();
+  updatePresence();
 }
 
 function renderShareUI() {
@@ -785,6 +824,7 @@ function renderShareUI() {
     hint.textContent = 'O microfone nunca é usado — só a imagem e, se quiser, o som do PC.';
   }
   updateAwake();
+  updatePresence();
 }
 
 // Telas que estou assistindo + um cartão "Assistir" para cada transmissão que ainda não abri.
@@ -801,6 +841,7 @@ function renderStage() {
     : 'Quando alguém da sala transmitir, a tela aparece aqui.';
   grid.classList.toggle('solo', n === 1);
   updateAwake();
+  updatePresence();
 }
 
 function makeCard(id, p) {
@@ -1139,6 +1180,7 @@ async function startShare() {
   S.encoder = $('encoderSel').value === 'cpu' ? 'cpu' : 'gpu';
   S.encoderUsed = null;
   S.seq += 1;
+  S.since.share = Date.now();
   S.wanted = new Set();
   S.watchers = new Set();
   $('selfPreview').srcObject = stream;
@@ -1277,6 +1319,7 @@ function onIncomingCall(call) {
   if (old) removeTile(call.peer);
 
   call.answer(undefined, { sdpTransform: (sdp) => tuneSdp(sdp, null) });   // não envio nada de volta
+  if (!S.tiles.size) S.since.watch = Date.now();
   const tile = makeTile(call.peer, seq, call);
   S.tiles.set(call.peer, tile);
   call.on('stream', (stream) => attachStream(tile, stream));
@@ -1422,6 +1465,244 @@ if (IS_APP && window.tav.hardware) {
     renderShareUI();
   }).catch(() => {});
 }
+
+// ---------------- configurações (engrenagem) ----------------
+function openSettings(tab) {
+  $('settings').classList.remove('hidden');
+  showSettingsTab(tab || 'geral');
+  fillSettings();
+  document.addEventListener('keydown', onSettingsKey);
+}
+function closeSettings() {
+  $('settings').classList.add('hidden');
+  document.removeEventListener('keydown', onSettingsKey);
+}
+function onSettingsKey(e) {
+  if (e.key === 'Escape') closeSettings();
+}
+function showSettingsTab(tab) {
+  for (const b of document.querySelectorAll('.set-tab')) b.classList.toggle('active', b.dataset.tab === tab);
+  for (const page of document.querySelectorAll('.set-page')) page.classList.toggle('hidden', page.dataset.page !== tab);
+  $('settings').querySelector('.set-body').scrollTop = 0;
+}
+function copyOptions(from, to) {
+  to.textContent = '';
+  for (const o of from.options) to.appendChild(new Option(o.textContent, o.value));
+  to.value = from.value;
+}
+
+async function fillSettings() {
+  $('setName').value = store('tav-name') || $('nameInput').value.trim();
+  copyOptions($('qualitySel'), $('setQuality'));
+  copyOptions($('encoderSel'), $('setEncoder'));
+  $('setAudio').checked = $('audioChk').checked;
+  const vol = Math.round(sfxVolume * 100);
+  $('setSfxVol').value = vol;
+  $('setSfxVolText').textContent = vol + '%';
+  renderThemeEditor(currentTheme());
+  $('updateStatus').textContent = 'O ScreenPLAY se atualiza sozinho sempre que abre.';
+  let app = null;
+  if (IS_APP && window.tav.settingsGet) {
+    try { app = await window.tav.settingsGet(); } catch { app = null; }
+  }
+  renderAutoStart(app);
+  $('aboutVersion').textContent = app ? 'Versão ' + app.version : '';
+}
+
+// Iniciar com o Windows / abrir minimizado (só no app instalado).
+function renderAutoStart(app) {
+  const can = !!(app && app.canAutoStart);
+  const on = !!(app && app.openAtLogin);
+  $('setAutoStart').checked = on;
+  $('setMinimized').checked = !!(app && app.startMinimized);
+  $('setAutoStart').disabled = !can;
+  $('setMinimized').disabled = !can || !on;
+  $('autoStartNote').textContent = can
+    ? 'O ScreenPLAY abre sozinho quando você liga o PC.'
+    : 'Disponível no ScreenPLAY instalado.';
+}
+async function changeAutoStart(patch) {
+  if (!IS_APP || !window.tav.settingsSet) return;
+  try {
+    renderAutoStart(await window.tav.settingsSet(patch));
+  } catch {
+    toast('Não consegui mudar essa opção agora.', 'err');
+  }
+}
+
+// Trocar o nome: vale na hora, inclusive dentro da sala.
+function applyName() {
+  const raw = $('setName').value.trim();
+  if (!raw) {
+    $('setName').value = store('tav-name') || S.myName || '';
+    return;
+  }
+  const name = cleanName(raw);
+  $('setName').value = name;
+  $('nameInput').value = name;
+  if (name === store('tav-name')) return;
+  store('tav-name', name);
+  if (S.peer && S.code) {
+    S.myName = name;
+    const me = S.view.get(S.myId);
+    if (me) me.name = name;
+    renderPeople();
+    sendState();
+  }
+  toast(`Nome alterado para ${name}`);
+}
+
+async function checkUpdateNow() {
+  const out = $('updateStatus');
+  if (!IS_APP || !window.tav.checkUpdate) {
+    out.textContent = 'As atualizações automáticas só funcionam no ScreenPLAY instalado.';
+    return;
+  }
+  $('checkUpdateBtn').disabled = true;
+  out.textContent = 'Procurando…';
+  let r;
+  try { r = await window.tav.checkUpdate(); } catch { r = { status: 'error' }; }
+  $('checkUpdateBtn').disabled = false;
+  out.textContent = {
+    dev: 'As atualizações automáticas só funcionam no ScreenPLAY instalado.',
+    latest: `Você já está na versão mais nova (${r.version}).`,
+    available: `Baixando a versão ${r.version}… quando terminar, aparece o aviso para reiniciar.`,
+    ready: `A versão ${r.version} já foi baixada — clique em “Reiniciar agora” no aviso lá em cima.`,
+    error: 'Não consegui procurar agora. Confira sua internet e tente de novo.',
+  }[r.status] || 'Não consegui procurar agora.';
+  if (r.status === 'ready') {
+    $('updateText').textContent = `Versão ${r.version} pronta!`;
+    $('updateBar').classList.remove('hidden');
+  }
+}
+
+// ---------------- personalizar (cores) ----------------
+// As cores ficam no localStorage (theme-boot.js aplica antes de desenhar) e a cor de fundo também
+// vai para o lado Windows, pra janela já abrir com ela.
+let themeVars = {};
+let themeSaveTimer = null;
+const themeDefaults = () => ({ ...window.SP_THEME.PRESETS.mono.vars });
+function currentTheme() {
+  const saved = window.SP_THEME.load();
+  return { ...themeDefaults(), ...(saved ? saved.vars : {}) };
+}
+function sameTheme(a, b) {
+  return window.SP_THEME.KEYS.every(([k]) => String(a[k]).toLowerCase() === String(b[k]).toLowerCase());
+}
+function persistTheme() {
+  clearTimeout(themeSaveTimer);
+  themeSaveTimer = setTimeout(() => {
+    window.SP_THEME.save({ vars: themeVars });
+    if (IS_APP && window.tav.settingsSet) window.tav.settingsSet({ windowBg: themeVars['--bg'] }).catch(() => {});
+  }, 250);
+}
+function markPresets() {
+  for (const b of $('presetGrid').children) {
+    b.classList.toggle('sel', sameTheme(window.SP_THEME.PRESETS[b.dataset.preset].vars, themeVars));
+  }
+}
+function setThemeColor(key, value) {
+  themeVars[key] = value;
+  window.SP_THEME.apply(themeVars);
+  persistTheme();
+  markPresets();
+}
+function useTheme(vars) {
+  themeVars = { ...themeDefaults(), ...vars };
+  window.SP_THEME.apply(themeVars);
+  persistTheme();
+  renderThemeEditor(themeVars);
+}
+function resetTheme() {
+  clearTimeout(themeSaveTimer);
+  window.SP_THEME.save(null);
+  window.SP_THEME.apply(null);
+  if (IS_APP && window.tav.settingsSet) window.tav.settingsSet({ windowBg: themeDefaults()['--bg'] }).catch(() => {});
+  renderThemeEditor(themeDefaults());
+  toast('Cores voltaram ao padrão.');
+}
+
+function renderThemeEditor(vars) {
+  themeVars = { ...vars };
+  const presets = $('presetGrid');
+  presets.textContent = '';
+  for (const [id, preset] of Object.entries(window.SP_THEME.PRESETS)) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'preset';
+    b.dataset.preset = id;
+    const sw = document.createElement('span');
+    sw.className = 'sw';
+    for (const k of ['--bg', '--panel-2', '--text', '--accent', '--live']) {
+      const i = document.createElement('i');
+      i.style.background = preset.vars[k];
+      sw.appendChild(i);
+    }
+    const label = document.createElement('span');
+    label.textContent = preset.name;
+    b.append(sw, label);
+    b.onclick = () => useTheme(preset.vars);
+    presets.appendChild(b);
+  }
+  const grid = $('colorGrid');
+  grid.textContent = '';
+  for (const [key, labelText] of window.SP_THEME.KEYS) {
+    const row = document.createElement('label');
+    row.className = 'color-row';
+    const label = document.createElement('span');
+    label.textContent = labelText;
+    const color = document.createElement('input');
+    color.type = 'color';
+    color.value = themeVars[key];
+    const hex = document.createElement('input');
+    hex.type = 'text';
+    hex.className = 'hex';
+    hex.maxLength = 7;
+    hex.spellcheck = false;
+    hex.value = themeVars[key];
+    color.addEventListener('input', () => {
+      hex.value = color.value;
+      setThemeColor(key, color.value);
+    });
+    hex.addEventListener('change', () => {
+      let v = hex.value.trim();
+      if (!v.startsWith('#')) v = '#' + v;
+      if (window.SP_THEME.isHex(v)) {
+        v = v.toLowerCase();
+        color.value = v;
+        hex.value = v;
+        setThemeColor(key, v);
+      } else {
+        hex.value = themeVars[key];
+      }
+    });
+    row.append(label, color, hex);
+    grid.appendChild(row);
+  }
+  markPresets();
+}
+
+for (const b of document.querySelectorAll('[data-settings]')) b.onclick = () => openSettings();
+for (const b of document.querySelectorAll('.set-tab')) b.onclick = () => showSettingsTab(b.dataset.tab);
+$('setClose').onclick = closeSettings;
+$('settings').addEventListener('mousedown', (e) => { if (e.target === $('settings')) closeSettings(); });   // clique fora fecha
+$('setName').addEventListener('change', applyName);
+$('setName').addEventListener('keydown', (e) => { if (e.key === 'Enter') e.target.blur(); });
+$('setQuality').addEventListener('change', (e) => { $('qualitySel').value = e.target.value; store('tav-quality', e.target.value); });
+$('setEncoder').addEventListener('change', (e) => { $('encoderSel').value = e.target.value; store('tav-encoder', e.target.value); });
+$('setAudio').addEventListener('change', (e) => { $('audioChk').checked = e.target.checked; store('tav-audio', e.target.checked ? '1' : '0'); });
+$('setSfxVol').addEventListener('input', (e) => {
+  sfxVolume = Number(e.target.value) / 100;
+  store('tav-sfx-vol', String(e.target.value));
+  $('setSfxVolText').textContent = e.target.value + '%';
+});
+$('setSfxVol').addEventListener('change', () => sfx('join'));
+$('setSfxTest').onclick = () => sfx('live');
+$('setAutoStart').addEventListener('change', (e) => changeAutoStart({ openAtLogin: e.target.checked }));
+$('setMinimized').addEventListener('change', (e) => changeAutoStart({ startMinimized: e.target.checked }));
+$('themeReset').onclick = resetTheme;
+$('checkUpdateBtn').onclick = checkUpdateNow;
+$('openReleases').onclick = () => { if (IS_APP && window.tav.openReleases) window.tav.openReleases(); };
 
 // ---------------- eventos da página ----------------
 $('createBtn').onclick = () => createRoom();
