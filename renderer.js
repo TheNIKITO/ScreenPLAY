@@ -1,9 +1,10 @@
 'use strict';
 
 // Prefixo dos IDs no servidor público de sinalização do PeerJS (evita colidir com outros apps).
-// Mudou para v2 quando a sala passou a sobreviver à saída do dono e a ter "clique para assistir":
-// versões antigas não acham as salas novas (e a atualização automática resolve isso ao abrir).
-const PREFIX = 'screenplay-v2-';
+// v2: sala sobrevive à saída do dono e "clique para assistir". v3: entrar exige conta (credencial
+// conferida por quem cuida da sala). Versões antigas não acham as salas novas — a atualização
+// automática resolve isso ao abrir. As salas agora moram nos grupos: o código é o ID do canal.
+const PREFIX = 'screenplay-v3-';
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 // hint 'detail' = segura a resolução. ('motion' derrubava 1080p60 para 640x360 enquanto a banda subia.)
 // bitrate = teto. Com 10 Mbps no 1080p60, cenas pesadas faziam o codificador jogar quadros fora
@@ -14,12 +15,26 @@ const QUALITY = {
   '1080-60': { w: 1920, h: 1080, fps: 60, bitrate: 20000000, hint: 'detail' },
 };
 const REACTIONS = ['😂', '🔥', '👍', '😮', '❤️'];
+// Sinal de vida entre quem cuida da sala e os outros: a cada 5 s. Quem fica 20 s calado (PC travou,
+// desligou, internet caiu) sai da lista — e se for quem cuida da sala, outra pessoa assume.
+const ALIVE_EVERY = 5000;
+const ROOM_SILENCE = 20000;
 const ICON = {
   vol:    '<path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M19 5a10 10 0 0 1 0 14"/>',
   mute:   '<path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="m22 9-6 6M16 9l6 6"/>',
   fs:     '<path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/>',
   close:  '<path d="M18 6 6 18M6 6l12 12"/>',
   screen: '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>',
+  hash:   '<path d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18"/>',
+  plus:   '<path d="M12 5v14M5 12h14"/>',
+  more:   '<circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/>',
+  trash:  '<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/>',
+  pencil: '<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
+  invite: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6M22 11h-6"/>',
+  reload: '<path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/>',
+  door:   '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/>',
+  crown:  '<path d="M3 7l4.5 5L12 5l4.5 7L21 7l-2 11H5L3 7z"/>',
+  cog:    '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
 };
 const svg = (paths, size = 18) =>
   `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
@@ -31,6 +46,7 @@ const canShare = IS_APP ||
   (!!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) && window.isSecureContext);
 
 // Como a sala funciona:
+//  - Cada sala de transmissão de um grupo tem um código fixo: o ID do canal no Firebase.
 //  - Cada pessoa é um "participante" (um Peer com ID <prefixo><código>-<aleatório>).
 //  - O "dono" roda, além disso, o papel de SALA: um segundo Peer com o ID <prefixo><código>, que
 //    guarda a lista de quem está na sala e repassa recados. Todo mundo (inclusive o dono) se conecta
@@ -40,6 +56,9 @@ const canShare = IS_APP ||
 //    então continuam funcionando durante a troca.
 const S = {
   peer: null, myId: '', myName: '', code: '',
+  roomSeen: 0, aliveTimer: null,   // última vez que a sala deu sinal de vida / meu sinal de vida
+  group: null,            // { gid, cid, name } — a sala de transmissão (canal) em que estou
+  entered: false,         // já entrei de fato (conectado à sala)
   busy: false, leaving: false, joining: null,
   room: null,             // { peer, conns, roster, order, rebuildUntil, timer } — só no PC do dono
   roomConn: null,         // minha conexão com a sala
@@ -67,8 +86,8 @@ function randCode(n) {
   const bytes = crypto.getRandomValues(new Uint8Array(n));
   return Array.from(bytes, (b) => ALPHABET[b % ALPHABET.length]).join('');
 }
-const normCode = (v) => String(v || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
 const cleanName = (v) => String(v || '').replace(/\s+/g, ' ').trim().slice(0, 24) || 'Anônimo';
+const initial = (name) => (Array.from(String(name || '').trim())[0] || '?').toUpperCase();
 const roomId = () => PREFIX + S.code;
 const nameOf = (id) => (S.view.get(id) || {}).name || 'Alguém';
 const hasAudio = () => !!(S.localStream && S.localStream.getAudioTracks().length);
@@ -92,21 +111,11 @@ function toast(text, kind = '', ms = 4000) {
   $('toasts').appendChild(el);
   setTimeout(() => el.remove(), ms);
 }
-function homeMsg(text, isErr) {
-  const el = $('homeMsg');
-  el.textContent = text || '';
-  el.classList.toggle('err', !!isErr);
-}
-function setBusy(on, text) {
-  S.busy = on;
-  $('createBtn').disabled = on;
-  $('joinBtn').disabled = on;
-  if (on) homeMsg(text);
-}
 function setNet(text, cls) {
-  const el = $('netStatus');
-  el.textContent = text;
-  el.className = 'status ' + (cls || '');
+  for (const el of [$('netStatus'), $('voiceStatus')]) {
+    el.textContent = text;
+    el.className = 'status ' + (cls || '');
+  }
 }
 async function copy(text, okMsg) {
   try {
@@ -133,19 +142,18 @@ function peerErrMsg(err) {
 }
 function libOk() {
   if (typeof Peer === 'undefined') {
-    homeMsg('Não consegui carregar o app. Feche e abra de novo.', true);
+    toast('Não consegui carregar o app. Feche e abra de novo.', 'err');
     return false;
   }
   return true;
 }
 function readName() {
-  if (!$('nameInput').value.trim()) {
-    homeMsg('Digite seu nome primeiro.', true);
-    $('nameInput').focus();
+  const me = window.SPAuth && window.SPAuth.profile();
+  if (!me || !me.nick) {
+    showAuth('login');
     return '';
   }
-  S.myName = cleanName($('nameInput').value);
-  store('tav-name', S.myName);
+  S.myName = me.nick;
   return S.myName;
 }
 function updateAwake() {
@@ -350,7 +358,7 @@ function onPeerError(err) {
 // ---------------- papel de "sala" (roda no PC do dono) ----------------
 async function startHosting(code, rebuilding) {
   const peer = await openPeer(PREFIX + code);
-  const room = { peer, conns: new Map(), roster: new Map(), order: 0, rebuildUntil: 0, timer: null };
+  const room = { peer, conns: new Map(), roster: new Map(), seen: new Map(), order: 0, rebuildUntil: 0, timer: null, beat: null, sweep: null };
   peer.on('connection', (conn) => roomAccept(room, conn));
   peer.on('error', (err) => console.warn('[sala]', err.type));
   if (rebuilding) {
@@ -359,6 +367,8 @@ async function startHosting(code, rebuilding) {
     room.timer = setTimeout(() => roomBroadcast(room), 6200);
   }
   S.room = room;
+  room.beat = setInterval(() => publishRoom(true), ROOM_BEAT);   // "ainda estamos aqui" pra quem olha de fora
+  room.sweep = setInterval(() => roomSweep(room), ALIVE_EVERY);
   return room;
 }
 
@@ -367,6 +377,8 @@ function stopHosting() {
   S.room = null;
   if (!room) return;
   clearTimeout(room.timer);
+  clearInterval(room.beat);
+  clearInterval(room.sweep);
   try { room.peer.destroy(); } catch {}
 }
 
@@ -375,23 +387,46 @@ function roomAccept(room, conn) {
   const pid = conn.peer;
   conn.on('data', (msg) => {
     if (S.room !== room || !msg || typeof msg !== 'object') return;
+    room.seen.set(pid, Date.now());
+    if (msg.t === 'alive') return;
     if (msg.t === 'hello') {
-      room.conns.set(pid, conn);
-      let order = Number(msg.order) || 0;
-      if (order > 0) room.order = Math.max(room.order, order);
-      else order = ++room.order;
-      room.roster.set(pid, {
-        name: cleanName(msg.name), sharing: !!msg.sharing, seq: Number(msg.seq) || 0, audio: !!msg.audio, order,
+      // Confere a conta (credencial assinada pelo Google) e se a pessoa é mesmo do grupo.
+      const gid = S.group && S.group.gid;
+      window.SPAuth.verifyToken(msg.token).then(async (who) => (
+        who && who.name && gid && await memberOk(gid, who.uid) ? who : null
+      )).then((who) => {
+        if (S.room !== room || !conn.open) return;
+        if (!who) {
+          try { conn.send({ t: 'denied' }); } catch {}
+          setTimeout(() => { try { conn.close(); } catch {} }, 300);
+          return;
+        }
+        room.conns.set(pid, conn);
+        let order = Number(msg.order) || 0;
+        if (order > 0) room.order = Math.max(room.order, order);
+        else order = ++room.order;
+        room.roster.set(pid, {
+          name: cleanName(who.name), uid: who.uid, sharing: !!msg.sharing, seq: Number(msg.seq) || 0, audio: !!msg.audio, order,
+        });
+        roomBroadcast(room);
       });
-      roomBroadcast(room);
     } else if (msg.t === 'state') {
       const p = room.roster.get(pid);
       if (!p) return;
-      if (typeof msg.name === 'string' && msg.name.trim()) p.name = cleanName(msg.name);
       p.sharing = !!msg.sharing;
       p.seq = Number(msg.seq) || 0;
       p.audio = !!msg.audio;
       roomBroadcast(room);
+      // Trocou o nick: vale o que está na credencial nova (e só se for a mesma conta).
+      if (typeof msg.token === 'string') {
+        window.SPAuth.verifyToken(msg.token).then((who) => {
+          if (S.room !== room || !who || who.uid !== p.uid || !who.name) return;
+          p.name = cleanName(who.name);
+          roomBroadcast(room);
+        });
+      }
+    } else if (!room.roster.has(pid)) {
+      // recados só de quem já foi conferido
     } else if (msg.t === 'relay' && typeof msg.to === 'string') {
       const target = room.conns.get(msg.to);
       if (target && target.open) { try { target.send({ t: 'relayed', from: pid, msg: msg.msg }); } catch {} }
@@ -410,6 +445,22 @@ function roomAccept(room, conn) {
   conn.on('error', drop);
 }
 
+// Manda sinal de vida pra todo mundo e tira da sala quem ficou calado demais.
+function roomSweep(room) {
+  if (S.room !== room) return;
+  const now = Date.now();
+  for (const [pid, c] of [...room.conns]) {
+    if (now - (room.seen.get(pid) || 0) > ROOM_SILENCE) {
+      room.conns.delete(pid);
+      room.seen.delete(pid);
+      try { c.close(); } catch {}
+      if (room.roster.delete(pid)) roomBroadcast(room);
+    } else if (c.open) {
+      try { c.send({ t: 'alive' }); } catch {}
+    }
+  }
+}
+
 function roomBroadcast(room) {
   if (S.room !== room) return;
   const list = [...room.roster].map(([id, p]) => ({ id, ...p })).sort((a, b) => a.order - b.order);
@@ -417,6 +468,7 @@ function roomBroadcast(room) {
   for (const c of room.conns.values()) {
     if (c.open) { try { c.send(msg); } catch {} }
   }
+  publishRoom();
 }
 
 // ---------------- eu (participante) <-> sala ----------------
@@ -445,21 +497,38 @@ function connectRoom(timeoutMs) {
 
 function attachRoom(conn) {
   S.roomConn = conn;
+  S.roomSeen = Date.now();
+  clearInterval(S.aliveTimer);
+  S.aliveTimer = setInterval(() => {
+    if (S.roomConn !== conn) return;
+    if (Date.now() - S.roomSeen > ROOM_SILENCE) {   // quem cuidava da sala sumiu sem avisar
+      try { conn.close(); } catch {}
+      onRoomLost(conn);
+      return;
+    }
+    sendRoom({ t: 'alive' });
+  }, ALIVE_EVERY);
   conn.on('data', onRoomMessage);
   conn.on('close', () => onRoomLost(conn));
   conn.on('error', () => onRoomLost(conn));
   const me = S.view.get(S.myId);
-  conn.send({
-    t: 'hello', name: S.myName, order: me && me.order ? me.order : undefined,
-    sharing: !!S.localStream, seq: S.seq, audio: hasAudio(),
+  // Leva a credencial da conta: quem cuida da sala confere e usa o nick que está nela.
+  window.SPAuth.idToken().catch(() => '').then((token) => {
+    if (S.roomConn !== conn || !conn.open) return;
+    conn.send({
+      t: 'hello', token, name: S.myName, order: me && me.order ? me.order : undefined,
+      sharing: !!S.localStream, seq: S.seq, audio: hasAudio(),
+    });
   });
-  if (S.code && !$('room').classList.contains('hidden')) setNet('Conectado', 'ok');
+  if (S.entered) setNet('Conectado', 'ok');
 }
 
 function onRoomMessage(msg) {
   if (!msg || typeof msg !== 'object') return;
+  S.roomSeen = Date.now();
   if (msg.t === 'roster' && Array.isArray(msg.list)) applyRoster(msg.list, msg.owner, !!msg.merge);
   else if (msg.t === 'relayed' && typeof msg.from === 'string' && msg.msg && typeof msg.msg === 'object') onRelayed(msg.from, msg.msg);
+  else if (msg.t === 'denied') leaveRoom('Não consegui confirmar sua conta. Saia da conta e entre de novo.');
 }
 
 function sendRoom(msg) {
@@ -468,8 +537,12 @@ function sendRoom(msg) {
 }
 const relay = (to, msg) => sendRoom({ t: 'relay', to, msg });
 const cast = (msg) => sendRoom({ t: 'cast', msg });
-function sendState() {
-  sendRoom({ t: 'state', name: S.myName, sharing: !!S.localStream, seq: S.seq, audio: hasAudio() });
+// withIdentity: manda junto a credencial (depois de trocar o nick, pra sala atualizar o nome).
+function sendState(withIdentity) {
+  const state = { t: 'state', sharing: !!S.localStream, seq: S.seq, audio: hasAudio() };
+  if (!withIdentity) return sendRoom(state);
+  window.SPAuth.idToken().catch(() => '').then((token) => sendRoom({ ...state, token }));
+  return true;
 }
 
 // A conexão com a sala caiu: o dono saiu (ou a internet piscou). Alguém assume a sala.
@@ -513,119 +586,101 @@ async function migrate() {
   if (!S.leaving && S.peer) leaveRoom('A sala caiu e não deu para reconectar.');
 }
 
-// ---------------- criar / entrar / sair ----------------
-async function joinAsParticipant() {
+// ---------------- entrar / sair de uma sala de transmissão ----------------
+// A sala de um grupo é fixa (o código é o ID do canal). Quem entra numa sala vazia passa a cuidar
+// dela (papel de "sala"); se essa pessoa sair, a próxima assume, como sempre.
+async function connectStream() {
   let peer;
   try {
     peer = await openPeer(`${roomId()}-${randCode(8)}`);
   } catch (err) {
     return { error: peerErrMsg(err) };
   }
+  if (S.leaving) { try { peer.destroy(); } catch {} return { error: '' }; }
   setupParticipant(peer);
-  S.view = new Map([[S.myId, { name: S.myName, sharing: false, seq: 0, audio: false, order: 0 }]]);
-  const r = await connectRoom(15000);
-  if (!r.conn) {
-    try { peer.destroy(); } catch {}
-    S.peer = null;
-    return {
-      error: r.error === 'missing'
-        ? 'Sala não encontrada. Confira o código.'
-        : 'Não consegui entrar na sala. Confira o código e tente de novo.',
-    };
+  S.view = new Map([[S.myId, { name: S.myName, uid: G.uid, sharing: false, seq: 0, audio: false, order: 0 }]]);
+  const deadline = Date.now() + 40000;
+  while (!S.leaving && Date.now() < deadline) {
+    const r = await connectRoom(8000);
+    if (S.leaving) break;
+    if (r.conn) { attachRoom(r.conn); return { ok: true }; }
+    if (r.error === 'missing' && !S.room) {
+      // Sala vazia: eu passo a cuidar dela. (Se outra pessoa assumiu junto, entro na dela.)
+      try { await startHosting(S.code, false); } catch (err) { if (err.type !== 'unavailable-id') await sleep(1500); }
+    } else {
+      await sleep(1000);
+    }
   }
-  attachRoom(r.conn);
-  return { ok: true };
+  stopHosting();
+  try { peer.destroy(); } catch {}
+  if (S.peer === peer) S.peer = null;
+  return { error: S.leaving ? '' : 'Não consegui entrar na sala. Confira sua internet e tente de novo.' };
 }
 
-async function createRoom(attempt = 0) {
-  if (S.busy && attempt === 0) return;
-  if (!readName() || !libOk()) return;
-  setBusy(true, 'Criando sala…');
+async function joinStream(gid, ch) {
+  if (S.busy || !readName() || !libOk()) return;
+  if (S.peer || S.group) leaveRoom();
+  S.busy = true;
   S.leaving = false;
-  S.code = randCode(6);
-  try {
-    await startHosting(S.code, false);
-  } catch (err) {
-    if (err.type === 'unavailable-id' && attempt < 3) return createRoom(attempt + 1);
-    S.code = '';
-    setBusy(false);
-    homeMsg(peerErrMsg(err), true);
-    return;
-  }
-  const r = await joinAsParticipant();
+  S.code = ch.id;
+  S.group = { gid, cid: ch.id, name: ch.name };
+  setNet('Conectando…', 'warn');
+  renderVoice();
+  renderChannels();
+  const r = await connectStream();
+  S.busy = false;
   if (!r.ok) {
-    stopHosting();
-    S.code = '';
-    setBusy(false);
-    homeMsg(r.error, true);
+    if (r.error) leaveRoom(r.error, true);   // sem erro = a pessoa desistiu enquanto conectava
     return;
   }
-  setBusy(false);
-  homeMsg('');
-  enterRoom();
-}
-
-async function joinRoom() {
-  if (S.busy) return;
-  if (!readName()) return;
-  const code = normCode($('codeInput').value);
-  if (code.length !== 6) {
-    homeMsg('Digite o código de 6 caracteres da sala.', true);
-    $('codeInput').focus();
-    return;
-  }
-  if (!libOk()) return;
-  setBusy(true, 'Entrando na sala…');
-  S.leaving = false;
-  S.code = code;
-  const r = await joinAsParticipant();
-  setBusy(false);
-  if (!r.ok) {
-    S.code = '';
-    homeMsg(r.error, true);
-    return;
-  }
-  homeMsg('');
   enterRoom();
 }
 
 function enterRoom() {
-  $('home').classList.add('hidden');
-  $('room').classList.remove('hidden');
-  $('roomCode').textContent = S.code;
+  S.entered = true;
   S.since = { room: Date.now(), share: 0, watch: 0 };
   setNet('Conectado', 'ok');
+  showView('room');
+  renderRoomHead();
   renderPeople();
   renderShareUI();
   renderStage();
+  renderVoice();
   sfx('join');
   clearInterval(pingTimer);
   pingTimer = setInterval(measurePings, 2000);
   measurePings();
 }
 
-function leaveRoom(reason) {
-  if (S.leaving && !S.peer) return;
+// quiet: sem o som de saída (nem chegou a entrar).
+function leaveRoom(reason, quiet) {
+  if (S.leaving && !S.peer && !S.group) return;
   S.leaving = true;
-  sfx('leave');
+  if (!quiet) sfx('leave');
   clearInterval(pingTimer);
   pingTimer = null;
+  clearInterval(S.aliveTimer);
   closePicker(null);
   stopShare(true);
   for (const id of [...S.tiles.keys()]) removeTile(id);
-  stopHosting();   // se eu era o dono, a próxima pessoa da sala assume
+  // Eu cuidava da sala e era o último: quem olha de fora já vê a sala vazia.
+  if (S.room && S.group && S.room.roster.size <= 1) {
+    GAPI().setRoom(S.group.gid, S.group.cid, []).catch(() => {});
+  }
+  stopHosting();   // se eu cuidava da sala, a próxima pessoa assume
   try { if (S.peer) S.peer.destroy(); } catch {}
   Object.assign(S, {
-    peer: null, myId: '', code: '', joining: null, room: null, roomConn: null, ownerId: '', lostOwner: '',
-    migrating: false, view: new Map(), viewReady: false, outCalls: new Map(), tiles: new Map(), seq: 0,
-    wanted: new Set(), watchers: new Set(), watching: new Map(), audioMode: 'none', encoderUsed: null,
-    pings: new Map(),
+    peer: null, myId: '', code: '', group: null, entered: false, joining: null, room: null, roomConn: null,
+    ownerId: '', lostOwner: '', migrating: false, view: new Map(), viewReady: false, outCalls: new Map(),
+    tiles: new Map(), seq: 0, wanted: new Set(), watchers: new Set(), watching: new Map(), audioMode: 'none',
+    encoderUsed: null, pings: new Map(),
   });
   $('grid').textContent = '';
   $('reactLayer').textContent = '';
-  $('room').classList.add('hidden');
-  $('home').classList.remove('hidden');
-  homeMsg(reason || '', !!reason);
+  renderVoice();
+  if (G.view === 'room') showDefaultView();
+  else renderChannels();
+  if (reason) toast(reason, 'err', 6000);
   updateAwake();
   updatePresence();
 }
@@ -702,12 +757,12 @@ function applyRoster(list, owner, merge) {
   for (const p of list) {
     if (!p || typeof p.id !== 'string') continue;
     next.set(p.id, {
-      name: cleanName(p.name), sharing: !!p.sharing, seq: Number(p.seq) || 0, audio: !!p.audio, order: Number(p.order) || 0,
+      name: cleanName(p.name), uid: typeof p.uid === 'string' ? p.uid : '', sharing: !!p.sharing, seq: Number(p.seq) || 0,
+      audio: !!p.audio, order: Number(p.order) || 0,
     });
   }
   // Durante a troca de dono a lista ainda está chegando: mantém quem já estava (menos quem saiu).
   if (merge) for (const [id, p] of S.view) if (!next.has(id) && id !== S.lostOwner) next.set(id, p);
-  const prevOwner = S.ownerId;
   if (typeof owner === 'string' && owner) S.ownerId = owner;
 
   if (S.viewReady) {
@@ -727,9 +782,6 @@ function applyRoster(list, owner, merge) {
     if (pick) sfx(pick);
   }
   S.view = next;
-  if (S.viewReady && prevOwner && S.ownerId !== prevOwner) {
-    toast(S.ownerId === S.myId ? 'Você agora é o dono da sala' : `${nameOf(S.ownerId)} agora é o dono da sala`);
-  }
   S.viewReady = true;
 
   // Some a tela de quem saiu ou parou de transmitir (o seq evita apagar uma transmissão nova
@@ -754,61 +806,27 @@ function applyRoster(list, owner, merge) {
 }
 
 function renderPeople() {
-  const ul = $('people');
-  ul.textContent = '';
-  const ids = [...S.view.keys()].sort((a, b) =>
-    ((b === S.ownerId) - (a === S.ownerId)) || ((S.view.get(a).order || 0) - (S.view.get(b).order || 0)));
-  for (const id of ids) {
-    const p = S.view.get(id);
-    const li = document.createElement('li');
-    const av = document.createElement('span');
-    av.className = 'av';
-    av.style.background = colorOf(id);
-    av.textContent = p.name.charAt(0).toUpperCase();
-    const nm = document.createElement('span');
-    nm.className = 'pname';
-    nm.textContent = p.name;
-    if (id === S.myId) {
-      const you = document.createElement('small');
-      you.textContent = ' (você)';
-      nm.appendChild(you);
-    }
-    li.append(av, nm);
-    if (id === S.ownerId) {
-      const b = document.createElement('span');
-      b.className = 'pill host'; b.textContent = 'DONO';
-      b.title = 'Dono da sala — se sair, outra pessoa assume e a sala continua';
-      li.appendChild(b);
-    }
-    if (p.sharing) {
-      const b = document.createElement('span');
-      b.className = 'pill live';
-      b.textContent = p.audio ? 'AO VIVO · SOM' : 'AO VIVO';
-      li.appendChild(b);
-    }
-    ul.appendChild(li);
-  }
-  $('count').textContent = S.view.size;
   renderPing();
   updatePresence();
+  if (S.group && S.group.gid === G.gid) renderChannels();   // embaixo do canal e na lista de membros
+}
+
+// Opções de transmissão (Configurações → Transmissão).
+function sharePrefs() {
+  const q = store('tav-quality');
+  return {
+    quality: QUALITY[q] ? q : '1080-30',
+    encoder: store('tav-encoder') === 'cpu' ? 'cpu' : 'gpu',
+    audio: store('tav-audio') !== '0',
+  };
 }
 
 function renderShareUI() {
   const sharing = !!S.localStream;
-  const btn = $('shareBtn');
-  btn.textContent = sharing ? 'Parar transmissão' : 'Transmitir minha tela';
-  btn.classList.toggle('primary', !sharing);
-  btn.classList.toggle('live', sharing);
-  btn.disabled = !canShare;
-  $('audioChk').disabled = sharing || !canShare;
-  $('qualitySel').disabled = sharing || !canShare;
-  $('encoderSel').disabled = sharing || !canShare;
   $('selfBox').classList.toggle('hidden', !sharing);
   const hint = $('shareHint');
-  hint.classList.toggle('on', sharing);
-  if (!canShare) {
-    hint.textContent = 'Este aparelho não permite transmitir a tela — mas dá para assistir.';
-  } else if (sharing) {
+  hint.classList.toggle('hidden', !sharing);
+  if (sharing) {
     const n = S.watchers.size;
     const som = {
       system: 'som do PC (sem Discord)',
@@ -819,10 +837,10 @@ function renderShareUI() {
       gpu: ` · H.264 na placa${S.hw.gpu ? ' ' + S.hw.gpu : ' de vídeo'}`,
       cpu: ` · VP8 no processador${S.hw.cpu ? ' ' + S.hw.cpu : ''}`,
     }[S.encoderUsed] || '';
-    hint.textContent = `● Ao vivo · ${n} ${n === 1 ? 'pessoa assistindo' : 'pessoas assistindo'} · ${som}${enc}`;
-  } else {
-    hint.textContent = 'O microfone nunca é usado — só a imagem e, se quiser, o som do PC.';
+    hint.textContent = `● Ao vivo · ${n} assistindo`;
+    hint.title = `Ao vivo · ${n} ${n === 1 ? 'pessoa assistindo' : 'pessoas assistindo'} · ${som}${enc}`;
   }
+  renderVoice();
   updateAwake();
   updatePresence();
 }
@@ -1005,7 +1023,7 @@ function renderPicker() {
     grid.appendChild(card);
   }
   $('pickGo').disabled = !picker.chosen;
-  $('pickNote').textContent = !$('audioChk').checked ? 'Sem som'
+  $('pickNote').textContent = !sharePrefs().audio ? 'Sem som'
     : picker.kind === 'screen' ? 'Com o som do PC, sem o Discord · sem microfone'
     : 'Com o som só deste app · sem microfone';
 }
@@ -1113,8 +1131,9 @@ if (IS_APP && window.tav.onAudioEnded) {
 // ---------------- transmitir minha tela ----------------
 async function startShare() {
   if (!canShare || S.localStream) return;
-  const q = QUALITY[$('qualitySel').value] || QUALITY['1080-30'];
-  const withAudio = $('audioChk').checked;
+  const prefs = sharePrefs();
+  const q = QUALITY[prefs.quality];
+  const withAudio = prefs.audio;
   const audio = withAudio
     ? { echoCancellation: false, noiseSuppression: false, autoGainControl: false,
         suppressLocalAudioPlayback: false, restrictOwnAudio: true }
@@ -1177,7 +1196,7 @@ async function startShare() {
 
   S.localStream = stream;
   S.quality = q;
-  S.encoder = $('encoderSel').value === 'cpu' ? 'cpu' : 'gpu';
+  S.encoder = prefs.encoder;
   S.encoderUsed = null;
   S.seq += 1;
   S.since.share = Date.now();
@@ -1453,7 +1472,7 @@ function removeTile(id) {
 
 // ---------------- marca do processador e da placa de vídeo ----------------
 function labelEncoders() {
-  for (const o of $('encoderSel').options) {
+  for (const o of $('setEncoder').options) {
     if (o.value === 'gpu') o.textContent = S.hw.gpu ? `H.264 · Placa ${S.hw.gpu}` : 'H.264 · Placa de vídeo';
     if (o.value === 'cpu') o.textContent = S.hw.cpu ? `VP8 · Processador ${S.hw.cpu}` : 'VP8 · Processador';
   }
@@ -1466,10 +1485,1629 @@ if (IS_APP && window.tav.hardware) {
   }).catch(() => {});
 }
 
+// ---------------- grupos (estilo Discord) ----------------
+// Barra da esquerda = seus grupos. Dentro de cada grupo: canais de texto (conversa ao vivo pelo
+// Firebase) e salas de transmissão (a sala de sempre, pelo PeerJS — o código é o ID do canal).
+// Só o dono do grupo cria, renomeia e apaga canais.
+const ROOM_BEAT = 2 * 60 * 1000;    // quem cuida da sala avisa "ainda estamos aqui" a cada 2 min
+const ROOM_FRESH = 5 * 60 * 1000;   // aviso mais velho que isso = sala vazia (o PC de quem cuidava caiu)
+const MSG_GAP = 7 * 60 * 1000;      // mensagens seguidas da mesma pessoa (até 7 min) ficam juntas
+const G = {
+  uid: '', list: new Map(), ready: false, unsub: null, error: '',
+  gid: '', channels: null, chError: '', chUnsub: null, rooms: {}, roomsUnsub: null,
+  cid: '', view: 'welcome',
+  goneOk: new Set(),    // grupos que eu mesmo saí ou apaguei (sem aviso)
+  synced: new Set(),    // grupos onde já atualizei meu nome
+  wantGid: '',          // abrir assim que aparecer na lista (acabei de criar ou entrar)
+  wantCid: '',          // idem, para um canal de texto que acabei de criar
+};
+// Mensagens do canal de texto aberto.
+const M = { gid: '', cid: '', live: [], older: [], more: false, loaded: false, loading: false, error: '', unsub: null, atBottom: true };
+const GAPI = () => window.SPAuth.groups;
+
+const GROUP_ERRORS = {
+  'group/name': 'Dê um nome para o grupo.',
+  'channel/name': 'Dê um nome para o canal.',
+  'invite/invalid': 'O convite tem 8 letras e números. Confira e tente de novo.',
+  'invite/not-found': 'Não achei nenhum grupo com esse convite. Confira o código (o dono pode ter trocado).',
+  'permission-denied': 'O Firebase não deixou. Confira se as regras novas do Firestore foram publicadas.',
+  'unavailable': 'Sem conexão com o banco de dados. Confira sua internet.',
+  'auth/no-user': 'Entre na sua conta de novo.',
+};
+function groupErr(err, what) {
+  return GROUP_ERRORS[err && err.code] || `${what || 'Não deu certo'}${err && err.code ? ` (${err.code})` : ''}.`;
+}
+const groupOf = (gid) => G.list.get(gid);
+function isOwner(gid = G.gid) {
+  const g = groupOf(gid);
+  return !!(g && g.ownerUid === G.uid);
+}
+const sortedGroups = () => [...G.list.values()].sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0) || a.name.localeCompare(b.name));
+function groupInitials(name) {
+  const words = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return '?';
+  const first = (w) => Array.from(w)[0] || '';
+  return (words.length > 1 ? first(words[0]) + first(words[1]) : Array.from(words[0]).slice(0, 2).join('')).toUpperCase();
+}
+
+// Último grupo e último canal abertos (por conta).
+function loadNav() {
+  try { return JSON.parse(store('sp-nav-' + G.uid) || '{}') || {}; } catch { return {}; }
+}
+function saveNav() {
+  if (!G.uid) return;
+  const nav = loadNav();
+  nav.gid = G.gid;
+  nav.last = nav.last && typeof nav.last === 'object' ? nav.last : {};
+  if (G.gid && G.cid) nav.last[G.gid] = G.cid;
+  store('sp-nav-' + G.uid, JSON.stringify(nav));
+}
+
+// ----- ligar / desligar (entrar e sair da conta) -----
+function startGroups(uid) {
+  if (G.uid === uid && G.unsub) return;
+  stopGroups();
+  G.uid = uid;
+  G.unsub = GAPI().watchGroups(onGroups, (err) => {
+    G.ready = true;
+    G.error = groupErr(err, 'Não consegui carregar seus grupos');
+    renderAll();
+  });
+  renderAll();
+}
+function stopGroups() {
+  if (G.unsub) { try { G.unsub(); } catch {} }
+  closeGroup();
+  Object.assign(G, { uid: '', list: new Map(), ready: false, unsub: null, error: '', goneOk: new Set(), synced: new Set(), wantGid: '' });
+}
+// Para de ouvir o grupo aberto.
+function closeGroup() {
+  if (G.chUnsub) { try { G.chUnsub(); } catch {} }
+  if (G.roomsUnsub) { try { G.roomsUnsub(); } catch {} }
+  stopMessages();
+  Object.assign(G, { gid: '', cid: '', wantCid: '', channels: null, chError: '', chUnsub: null, rooms: {}, roomsUnsub: null });
+}
+function renderAll() {
+  renderRail();
+  renderGroupHead();
+  renderChannels();
+  refreshView();
+}
+
+function onGroups(list) {
+  const prev = G.list;
+  G.list = new Map(list.map((g) => [g.id, g]));
+  G.error = '';
+  for (const [gid, g] of prev) {
+    if (G.list.has(gid)) continue;
+    if (!G.goneOk.delete(gid)) toast(`Você não está mais no grupo “${g.name}”.`, 'warn', 6000);
+    if (S.group && S.group.gid === gid) leaveRoom();
+    if (G.gid === gid) closeGroup();
+  }
+  syncMemberNames();
+  const first = !G.ready;
+  G.ready = true;
+  if (G.wantGid && G.list.has(G.wantGid)) {
+    const gid = G.wantGid;
+    G.wantGid = '';
+    openGroup(gid);
+  } else if (first) {
+    // Abre onde parou (ou o primeiro grupo). Se da última vez estava no Início, continua lá.
+    const nav = loadNav();
+    const pick = G.list.has(nav.gid) ? nav.gid : nav.gid === '' ? '' : (sortedGroups()[0] || {}).id;
+    if (pick) openGroup(pick);
+    else renderAll();
+  } else {
+    renderAll();
+  }
+  if (S.group) { renderRoomHead(); renderVoice(); }
+}
+
+// Meu nome dentro de cada grupo acompanha o usuário da conta.
+function syncMemberNames() {
+  const me = window.SPAuth.profile();
+  if (!me || !me.nick) return;
+  for (const g of G.list.values()) {
+    const mine = g.members[G.uid];
+    const key = `${g.id}:${me.nick}`;
+    if (!mine || mine.name === me.nick || G.synced.has(key)) continue;
+    G.synced.add(key);
+    GAPI().syncMemberName(g.id).catch((err) => console.warn('[grupos] nome', err && err.code));
+  }
+}
+
+// ----- navegação -----
+function openHome() {
+  closeGroup();
+  saveNav();
+  renderRail();
+  renderGroupHead();
+  showView('welcome');
+}
+
+function openGroup(gid) {
+  if (!G.list.has(gid)) return openHome();
+  if (G.gid !== gid) {
+    closeGroup();
+    G.gid = gid;
+    G.chUnsub = GAPI().watchChannels(gid, (list) => onChannels(gid, list), (err) => {
+      if (G.gid !== gid) return;
+      G.chError = groupErr(err, 'Não consegui carregar os canais');
+      renderChannels();
+      refreshView();
+    });
+    G.roomsUnsub = GAPI().watchRooms(gid, (rooms) => {
+      if (G.gid !== gid) return;
+      G.rooms = rooms;
+      renderChannels();
+    });
+  }
+  saveNav();
+  renderRail();
+  renderGroupHead();
+  // Estou vendo a sala deste grupo: continuo nela. Senão, abre o canal de texto.
+  if (G.view === 'room' && S.group && S.group.gid === gid) renderChannels();
+  else showDefaultView();
+}
+
+function onChannels(gid, list) {
+  if (G.gid !== gid) return;
+  G.channels = list;
+  G.chError = '';
+  if (S.group && S.group.gid === gid) {
+    const ch = list.find((c) => c.id === S.group.cid);
+    if (!ch) {
+      leaveRoom('A sala foi apagada pelo dono do grupo.');
+    } else if (ch.name !== S.group.name) {
+      S.group.name = ch.name;
+      renderRoomHead();
+      renderVoice();
+    }
+  }
+  if (G.cid && !list.some((c) => c.id === G.cid && c.type === 'text')) {
+    G.cid = '';
+    stopMessages();
+  }
+  if (G.wantCid && list.some((c) => c.id === G.wantCid)) {
+    const cid = G.wantCid;
+    G.wantCid = '';
+    openChat(cid, true);
+    return;
+  }
+  renderChannels();
+  refreshView();
+}
+
+// Mostra de novo o que faz sentido, sem tirar a pessoa de onde ela está.
+function refreshView() {
+  if (G.view === 'room') return;
+  if (G.view === 'chat' && G.cid && M.cid === G.cid && (G.channels || []).some((c) => c.id === G.cid)) {
+    renderChatHead();
+    return;
+  }
+  showDefaultView();
+}
+function showDefaultView() {
+  if (!G.gid) return showView('welcome');
+  if (G.channels === null) return showView('nochan');
+  const texts = G.channels.filter((c) => c.type === 'text');
+  const want = G.cid || (loadNav().last || {})[G.gid];
+  const pick = texts.find((c) => c.id === want) || texts[0];
+  if (pick) openChat(pick.id);
+  else showView('nochan');
+}
+
+function showView(name) {
+  G.view = name;
+  for (const [id, v] of [['welcomeView', 'welcome'], ['noChanView', 'nochan'], ['chatView', 'chat'], ['roomView', 'room']]) {
+    $(id).classList.toggle('hidden', v !== name);
+  }
+  if (name === 'welcome') renderWelcome();
+  if (name === 'nochan') renderNoChan();
+  if (name === 'chat' && M.atBottom) $('msgList').scrollTop = $('msgList').scrollHeight;
+  renderChannels();
+}
+
+function renderWelcome() {
+  const has = G.list.size > 0;
+  $('welcomeTitle').textContent = !G.ready ? 'Carregando seus grupos…'
+    : G.error ? 'Não consegui carregar seus grupos'
+    : has ? `Olá, ${S.myName}!` : 'Crie seu primeiro grupo';
+  $('welcomeText').textContent = !G.ready ? '' : G.error || (has
+    ? 'Escolha um grupo na barra da esquerda — ou crie outro, ou entre num com convite.'
+    : 'Um grupo é o cantinho seu e dos seus amigos: canais de texto pra conversar e salas pra transmitir a tela.');
+  $('welcomeCreate').classList.toggle('hidden', !G.ready || !!G.error);
+  $('welcomeJoin').classList.toggle('hidden', !G.ready || !!G.error);
+}
+function renderNoChan() {
+  const loading = !G.chError && G.channels === null;
+  $('noChanTitle').textContent = G.chError ? 'Não consegui abrir o grupo' : loading ? 'Carregando…' : 'Nenhum canal de texto';
+  $('noChanText').textContent = G.chError || (loading ? '' : isOwner()
+    ? 'Crie um no + ao lado de “Canais de texto”.'
+    : 'O dono do grupo ainda não criou canais de texto.');
+}
+
+// ----- barra dos grupos -----
+function renderRail() {
+  const box = $('groupList');
+  box.textContent = '';
+  for (const g of sortedGroups()) {
+    const item = document.createElement('div');
+    item.className = 'rail-item' + (g.id === G.gid ? ' active' : '');
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'rail-btn';
+    if (g.photo) paintPhoto(b, g.photo);
+    else b.textContent = groupInitials(g.name);
+    b.dataset.tip = g.name;
+    b.setAttribute('aria-label', g.name);
+    b.onclick = () => openGroup(g.id);
+    b.oncontextmenu = (e) => { e.preventDefault(); groupMenu(g.id, e.clientX, e.clientY); };
+    item.appendChild(b);
+    if (S.group && S.group.gid === g.id) {
+      const dot = document.createElement('span');
+      dot.className = 'here-dot';
+      dot.innerHTML = svg(ICON.screen, 9);
+      item.appendChild(dot);
+    }
+    box.appendChild(item);
+  }
+  $('homeItem').classList.toggle('active', !G.gid);
+}
+
+function renderGroupHead() {
+  const g = groupOf(G.gid);
+  $('groupName').textContent = g ? g.name : 'ScreenPLAY';
+  $('groupHead').disabled = !g;
+}
+
+// ----- coluna dos canais (e a lista de membros da direita, que depende das mesmas coisas) -----
+function renderChannels() {
+  renderChannelList();
+  renderMembers();
+}
+function renderChannelList() {
+  const box = $('chanList');
+  const keep = box.scrollTop;
+  box.textContent = '';
+  const g = groupOf(G.gid);
+  if (!g) {
+    box.appendChild(chanNote(G.list.size ? 'Escolha um grupo na barra da esquerda.' : 'Seus grupos aparecem na barra da esquerda.'));
+    return;
+  }
+  if (G.chError) { box.appendChild(chanNote(G.chError)); return; }
+  if (G.channels === null) { box.appendChild(chanNote('Carregando canais…')); return; }
+  const owner = g.ownerUid === G.uid;
+  const texts = G.channels.filter((c) => c.type === 'text');
+  const streams = G.channels.filter((c) => c.type === 'stream');
+  box.appendChild(chanSection('Canais de texto', owner ? 'Criar canal de texto' : '', () => newChannel('text')));
+  for (const ch of texts) box.appendChild(chanEl(ch, owner));
+  if (!texts.length) box.appendChild(chanNote('Nenhum canal ainda.'));
+  box.appendChild(chanSection('Salas de transmissão', owner ? 'Criar sala de transmissão' : '', () => newChannel('stream')));
+  for (const ch of streams) {
+    box.appendChild(chanEl(ch, owner));
+    const people = roomPeople(ch.id);
+    if (people.length) box.appendChild(peopleList(people));
+  }
+  if (!streams.length) box.appendChild(chanNote('Nenhuma sala ainda.'));
+  box.scrollTop = keep;
+}
+function chanNote(text) {
+  const el = document.createElement('div');
+  el.className = 'chan-note';
+  el.textContent = text;
+  return el;
+}
+function chanSection(title, addTitle, onAdd) {
+  const el = document.createElement('div');
+  el.className = 'chan-sec';
+  const t = document.createElement('span');
+  t.textContent = title;
+  el.appendChild(t);
+  if (addTitle) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'mini';
+    b.title = addTitle;
+    b.setAttribute('aria-label', addTitle);
+    b.innerHTML = svg(ICON.plus, 16);
+    b.onclick = onAdd;
+    el.appendChild(b);
+  }
+  return el;
+}
+function chanEl(ch, owner) {
+  const text = ch.type === 'text';
+  const here = !text && !!S.group && S.group.cid === ch.id;
+  const active = text ? G.view === 'chat' && G.cid === ch.id : G.view === 'room' && here;
+  const el = document.createElement('div');
+  el.className = 'chan' + (active ? ' active' : '') + (here ? ' here' : '');
+  el.tabIndex = 0;
+  el.setAttribute('role', 'button');
+  el.innerHTML = `<span class="cico">${svg(text ? ICON.hash : ICON.screen, 18)}</span><span class="cname"></span>`;
+  el.querySelector('.cname').textContent = ch.name;
+  el.title = text ? `#${ch.name}` : here ? ch.name : `${ch.name} — clique para entrar`;
+  if (owner) {
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'mini';
+    more.title = 'Opções';
+    more.setAttribute('aria-label', 'Opções do canal');
+    more.innerHTML = svg(ICON.more, 16);
+    more.onclick = (e) => {
+      e.stopPropagation();
+      const r = more.getBoundingClientRect();
+      channelMenu(ch, r.left, r.bottom + 4, more);
+    };
+    el.appendChild(more);
+    el.oncontextmenu = (e) => { e.preventDefault(); channelMenu(ch, e.clientX, e.clientY); };
+  }
+  const go = () => (text ? openChat(ch.id, true) : openStream(ch));
+  el.onclick = go;
+  el.onkeydown = (e) => {
+    if (e.target === el && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); go(); }
+  };
+  return el;
+}
+
+// Quem está na sala: a lista ao vivo (se eu estou nela) ou o último aviso de quem cuida dela.
+function roomPeople(cid) {
+  if (S.group && S.group.gid === G.gid && S.group.cid === cid && S.entered) {
+    return [...S.view.values()].sort((a, b) => (a.order || 0) - (b.order || 0))
+      .map((p) => ({ uid: p.uid || '', name: p.name, live: p.sharing }));
+  }
+  const r = G.rooms[cid];
+  if (!r || Date.now() - r.at > ROOM_FRESH) return [];
+  return r.people.filter((p) => p && typeof p.name === 'string').slice(0, 30);
+}
+function peopleList(people) {
+  const ul = document.createElement('ul');
+  ul.className = 'chan-people';
+  for (const p of people) {
+    const li = document.createElement('li');
+    const av = document.createElement('span');
+    av.className = 'av';
+    paintAv(av, p.uid, p.name);
+    const nm = document.createElement('span');
+    nm.className = 'pname ' + fxClass(p.uid);
+    nm.textContent = cleanName(p.name);
+    li.append(av, nm);
+    if (p.live) {
+      const b = document.createElement('span');
+      b.className = 'pill live';
+      b.textContent = 'AO VIVO';
+      li.appendChild(b);
+    }
+    ul.appendChild(li);
+  }
+  return ul;
+}
+
+// ----- membros do grupo (direita, igual ao Discord) -----
+let membersOn = store('sp-members') !== '0';
+// Onde a pessoa está agora: { room, live } ou null.
+function memberStatus(uid) {
+  if (S.entered && S.group && S.group.gid === G.gid) {
+    for (const p of S.view.values()) if (p.uid === uid) return { room: S.group.name, live: !!p.sharing };
+  }
+  for (const ch of (G.channels || []).filter((c) => c.type === 'stream')) {
+    if (S.entered && S.group && S.group.cid === ch.id) continue;
+    const r = G.rooms[ch.id];
+    if (!r || Date.now() - r.at > ROOM_FRESH) continue;
+    const p = r.people.find((x) => x && x.uid === uid);
+    if (p) return { room: ch.name, live: !!p.live };
+  }
+  return null;
+}
+function renderMembers() {
+  const g = groupOf(G.gid);
+  const show = !!g && membersOn && G.view !== 'welcome';
+  $('members').classList.toggle('hidden', !show);
+  for (const b of document.querySelectorAll('.members-toggle')) {
+    b.classList.toggle('on', membersOn);
+    b.title = membersOn ? 'Esconder os membros do grupo' : 'Mostrar os membros do grupo';
+  }
+  if (!show) return;
+  const box = $('memberList');
+  const keep = box.scrollTop;
+  box.textContent = '';
+  const people = g.memberUids.map((uid) => {
+    const st = memberStatus(uid);
+    return {
+      uid, st, owner: uid === g.ownerUid, online: isOnline(uid) || !!st,
+      name: cleanName((g.members[uid] && g.members[uid].name) || 'Alguém'),
+    };
+  });
+  const rank = (p) => (p.st ? (p.st.live ? 0 : 1) : 2);   // transmitindo, numa sala, o resto
+  const byName = (a, b) => a.name.localeCompare(b.name, 'pt-BR', { sensitivity: 'base' });
+  const sections = PR.denied
+    ? [['Membros', people.sort((a, b) => rank(a) - rank(b) || byName(a, b))]]
+    : [
+      ['Online', people.filter((p) => p.online).sort((a, b) => rank(a) - rank(b) || byName(a, b))],
+      ['Offline', people.filter((p) => !p.online).sort(byName)],
+    ];
+  for (const [title, list] of sections) {
+    if (!list.length) continue;
+    const h = document.createElement('div');
+    h.className = 'mem-sec';
+    h.textContent = `${title} — ${list.length}`;
+    box.appendChild(h);
+    for (const p of list) box.appendChild(memberEl(p));
+  }
+  box.scrollTop = keep;
+}
+function memberEl(p) {
+  const known = !PR.denied;   // sem as regras novas no Firebase não dá pra saber quem está online
+  const el = document.createElement('div');
+  el.className = 'mem' + (known && !p.online ? ' off' : '');
+  const wrap = document.createElement('span');
+  wrap.className = 'av-wrap';
+  const av = document.createElement('span');
+  av.className = 'av';
+  paintAv(av, p.uid, p.name);
+  wrap.appendChild(av);
+  if (known) {
+    const dot = document.createElement('span');
+    dot.className = 'dot' + (p.online ? ' on' : '');
+    dot.title = p.online ? 'Online' : 'Offline';
+    wrap.appendChild(dot);
+  }
+  const text = document.createElement('div');
+  text.className = 'mem-text';
+  const line = document.createElement('div');
+  line.className = 'mem-line';
+  const nm = document.createElement('span');
+  nm.className = 'mem-name' + (p.online || !known ? ' ' + fxClass(p.uid) : '');
+  nm.textContent = p.name;
+  line.appendChild(nm);
+  if (p.owner) {
+    const c = document.createElement('span');
+    c.className = 'crown';
+    c.title = 'Dono do grupo';
+    c.innerHTML = svg(ICON.crown, 14);
+    line.appendChild(c);
+  }
+  text.appendChild(line);
+  if (p.st) {
+    const st = document.createElement('div');
+    st.className = 'mem-status' + (p.st.live ? ' live' : '');
+    st.innerHTML = svg(ICON.screen, 12);
+    const t = document.createElement('span');
+    t.textContent = p.st.live ? `Transmitindo em ${p.st.room}` : `Em ${p.st.room}`;
+    st.appendChild(t);
+    text.appendChild(st);
+  }
+  el.append(wrap, text);
+  if (p.uid === G.uid) el.title = 'Você';
+  return el;
+}
+
+// ----- sala de transmissão do grupo -----
+function openStream(ch) {
+  if (S.group && S.group.cid === ch.id) {
+    if (S.entered) showView('room');
+    return;
+  }
+  joinStream(G.gid, ch);
+}
+function renderRoomHead() {
+  if (!S.group) return;
+  const g = groupOf(S.group.gid);
+  $('roomTitle').textContent = S.group.name;
+  $('roomSub').textContent = g ? g.name : '';
+}
+// Painel "conectado" no pé da coluna dos canais (igual ao do Discord).
+function renderVoice() {
+  const on = !!S.group;
+  $('voicePanel').classList.toggle('hidden', !on);
+  renderRail();
+  if (!on) return;
+  const g = groupOf(S.group.gid);
+  $('voiceWhere').textContent = g ? `${S.group.name} · ${g.name}` : S.group.name;
+  $('voiceOpen').disabled = !S.entered;
+  $('voiceShare').disabled = !S.entered || !canShare;
+  $('voiceShare').textContent = S.localStream ? 'Parar' : 'Transmitir';
+  $('voiceShare').classList.toggle('live', !!S.localStream);
+}
+// Quem cuida da sala avisa no Firebase quem está nela (pra quem olha de fora ver).
+let roomPubTimer = null;
+function publishRoom(now) {
+  clearTimeout(roomPubTimer);
+  roomPubTimer = setTimeout(() => {
+    const room = S.room;
+    if (!room || !S.group) return;
+    const people = [...room.roster.values()].sort((a, b) => a.order - b.order)
+      .map((p) => ({ uid: p.uid || '', name: p.name, live: !!p.sharing }));
+    GAPI().setRoom(S.group.gid, S.group.cid, people).catch((err) => console.warn('[sala] lista', err && err.code));
+  }, now ? 0 : 1500);
+}
+// A pessoa é mesmo do grupo? (a lista que já tenho; se não estiver nela, pergunta ao servidor)
+async function memberOk(gid, uid) {
+  const g = groupOf(gid);
+  if (g && g.memberUids.includes(uid)) return true;
+  return GAPI().isMember(gid, uid);
+}
+
+// ----- conversa (canal de texto) -----
+function openChat(cid, focus) {
+  const ch = (G.channels || []).find((c) => c.id === cid && c.type === 'text');
+  if (!ch) return false;
+  G.cid = cid;
+  saveNav();
+  if (M.gid !== G.gid || M.cid !== cid) watchMessages(G.gid, cid);
+  showView('chat');
+  renderChatHead();
+  if (focus) $('msgInput').focus();
+  return true;
+}
+function renderChatHead() {
+  const ch = (G.channels || []).find((c) => c.id === G.cid);
+  if (!ch) return;
+  $('chatTitle').textContent = ch.name;
+  $('msgInput').placeholder = `Conversar em #${ch.name}`;
+}
+
+function stopMessages() {
+  if (M.unsub) { try { M.unsub(); } catch {} }
+  Object.assign(M, { gid: '', cid: '', live: [], older: [], more: false, loaded: false, loading: false, error: '', unsub: null, atBottom: true });
+  $('msgList').textContent = '';
+}
+function watchMessages(gid, cid) {
+  stopMessages();
+  Object.assign(M, { gid, cid });
+  renderMessages();
+  M.unsub = GAPI().watchMessages(gid, cid, (list, more) => {
+    if (M.gid !== gid || M.cid !== cid) return;
+    // Mensagens que saíram da janela ao vivo só por serem antigas continuam na tela.
+    const oldest = list.length ? list[0].at : Infinity;
+    const ids = new Set(list.map((m) => m.id));
+    const slid = M.live.filter((m) => !ids.has(m.id) && !m.pending && m.at < oldest);
+    if (slid.length) M.older = [...M.older, ...slid];
+    M.live = list;
+    if (!M.loaded) M.more = more;
+    M.loaded = true;
+    M.error = '';
+    renderMessages();
+  }, (err) => {
+    if (M.gid !== gid || M.cid !== cid) return;
+    M.error = groupErr(err, 'Não consegui carregar as mensagens');
+    M.loaded = true;
+    renderMessages();
+  });
+}
+function allMessages() {
+  const seen = new Set();
+  const out = [];
+  for (const m of [...M.older, ...M.live]) {
+    if (seen.has(m.id)) continue;
+    seen.add(m.id);
+    out.push(m);
+  }
+  return out.sort((a, b) => a.at - b.at);
+}
+
+function dayLabel(at) {
+  const d = new Date(at).toDateString();
+  const today = new Date();
+  const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
+  if (d === today.toDateString()) return 'Hoje';
+  if (d === yesterday.toDateString()) return 'Ontem';
+  return new Date(at).toLocaleDateString('pt-BR', { day: 'numeric', month: 'long', year: 'numeric' });
+}
+const timeLabel = (at) => new Date(at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+
+function chatNote(text) {
+  const el = document.createElement('div');
+  el.className = 'chat-note';
+  el.textContent = text;
+  return el;
+}
+function chatIntro(name) {
+  const el = document.createElement('div');
+  el.className = 'chat-intro';
+  el.innerHTML = `<div class="big-ico">${svg(ICON.hash, 34)}</div><h3></h3><p></p>`;
+  el.querySelector('h3').textContent = `Bem-vindo a #${name}!`;
+  el.querySelector('p').textContent = `Este é o começo do canal #${name}.`;
+  return el;
+}
+
+// mode 'older': acabou de carregar mensagens antigas em cima — mantém a posição de leitura.
+function renderMessages(mode) {
+  const box = $('msgList');
+  const visible = box.clientHeight > 0;
+  const oldHeight = box.scrollHeight;
+  const oldTop = box.scrollTop;
+  box.textContent = '';
+  if (!M.cid) return;
+  if (!M.loaded) { box.appendChild(chatNote('Carregando mensagens…')); return; }
+  if (M.error) { box.appendChild(chatNote(M.error)); return; }
+  const ch = (G.channels || []).find((c) => c.id === M.cid);
+  if (M.more) box.appendChild(chatNote(M.loading ? 'Carregando mensagens antigas…' : 'Role para cima para ver mensagens antigas'));
+  else box.appendChild(chatIntro(ch ? ch.name : ''));
+  const owner = isOwner(M.gid);
+  let prev = null;
+  let day = '';
+  for (const m of allMessages()) {
+    const d = new Date(m.at).toDateString();
+    if (d !== day) {
+      const sep = document.createElement('div');
+      sep.className = 'day-sep';
+      sep.textContent = dayLabel(m.at);
+      box.appendChild(sep);
+      day = d;
+      prev = null;
+    }
+    const first = !prev || prev.uid !== m.uid || m.at - prev.at > MSG_GAP;
+    box.appendChild(messageEl(m, first, owner));
+    prev = m;
+  }
+  if (!visible) return;
+  if (mode === 'older') box.scrollTop = box.scrollHeight - oldHeight + oldTop;
+  else box.scrollTop = M.atBottom ? box.scrollHeight : oldTop;
+}
+
+function messageEl(m, first, owner) {
+  const el = document.createElement('div');
+  el.className = 'cm' + (first ? ' first' : '') + (m.pending ? ' pending' : '');
+  const g = groupOf(M.gid);
+  const name = cleanName((g && g.members[m.uid] && g.members[m.uid].name) || m.name);
+  const full = new Date(m.at).toLocaleString('pt-BR', { dateStyle: 'full', timeStyle: 'short' });
+  if (first) {
+    const av = document.createElement('span');
+    av.className = 'av';
+    paintAv(av, m.uid, name);
+    const head = document.createElement('div');
+    head.className = 'mhead';
+    const b = document.createElement('b');
+    b.className = fxClass(m.uid);
+    b.textContent = name;
+    const t = document.createElement('time');
+    t.textContent = timeLabel(m.at);
+    t.title = full;
+    head.append(b, t);
+    el.append(av, head);
+  } else {
+    const t = document.createElement('time');
+    t.className = 'mside';
+    t.textContent = timeLabel(m.at);
+    t.title = full;
+    el.appendChild(t);
+  }
+  const txt = document.createElement('div');
+  txt.className = 'mtext';
+  txt.textContent = m.text;
+  el.appendChild(txt);
+  if (!m.pending && (m.uid === G.uid || owner)) {
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'mdel';
+    del.title = 'Apagar mensagem (Shift + clique apaga sem perguntar)';
+    del.setAttribute('aria-label', 'Apagar mensagem');
+    del.innerHTML = svg(ICON.trash, 15);
+    del.onclick = (e) => deleteMessage(m, e.shiftKey);
+    el.appendChild(del);
+  }
+  return el;
+}
+
+async function loadOlder() {
+  if (!M.more || M.loading || !M.loaded || M.error) return;
+  const all = allMessages().filter((m) => !m.pending);
+  if (!all.length) return;
+  const { gid, cid } = M;
+  M.loading = true;
+  renderMessages('older');
+  try {
+    const r = await GAPI().olderMessages(gid, cid, all[0]);
+    if (M.gid !== gid || M.cid !== cid) return;
+    M.older = [...r.list, ...M.older];
+    M.more = r.more;
+  } catch (err) {
+    console.warn('[mensagens] antigas', err && err.code);
+    if (M.gid === gid && M.cid === cid) M.more = false;
+  } finally {
+    if (M.gid === gid && M.cid === cid) {
+      M.loading = false;
+      renderMessages('older');
+    }
+  }
+}
+
+function sizeComposer() {
+  const ta = $('msgInput');
+  ta.style.height = 'auto';
+  ta.style.height = Math.min(ta.scrollHeight, 220) + 'px';
+}
+function sendChat() {
+  const ta = $('msgInput');
+  const text = ta.value;
+  if (!text.trim() || !M.cid) return;
+  const { gid, cid } = M;
+  ta.value = '';
+  sizeComposer();
+  M.atBottom = true;
+  GAPI().sendMessage(gid, cid, text).catch((err) => {
+    toast(groupErr(err, 'Não consegui mandar a mensagem'), 'err');
+    if (!ta.value && M.cid === cid) { ta.value = text; sizeComposer(); }
+  });
+}
+async function deleteMessage(m, now) {
+  const { gid, cid } = M;
+  if (!now) {
+    const ok = await ask({ title: 'Apagar mensagem?', text: 'Ela some para todo mundo do grupo.', ok: 'Apagar', danger: true });
+    if (!ok) return;
+  }
+  try {
+    await GAPI().deleteMessage(gid, cid, m.id);
+    if (M.cid === cid) {
+      M.older = M.older.filter((x) => x.id !== m.id);
+      renderMessages();
+    }
+  } catch (err) {
+    toast(groupErr(err, 'Não consegui apagar a mensagem'), 'err');
+  }
+}
+
+// ----- criar / entrar / convidar / sair -----
+function createGroupDlg() {
+  const me = window.SPAuth.profile();
+  ask({
+    title: 'Criar um grupo',
+    text: 'É o cantinho seu e dos seus amigos. Já vem com um canal de texto e uma sala de transmissão — depois é só mandar o convite.',
+    input: { label: 'Nome do grupo', value: me && me.nick ? `Grupo de ${me.nick}` : '', max: 40 },
+    ok: 'Criar grupo',
+    busy: 'Criando…',
+    run: (v) => GAPI().createGroup(v.text),
+  }).then((gid) => {
+    if (!gid) return;
+    G.wantGid = gid;
+    if (G.list.has(gid)) { G.wantGid = ''; openGroup(gid); }
+    toast('Grupo criado! Pra chamar os amigos, clique no nome do grupo → “Convidar pessoas”.', '', 6000);
+  });
+}
+
+function joinGroupDlg() {
+  ask({
+    title: 'Entrar num grupo',
+    text: 'Cole o código de convite que seu amigo mandou.',
+    input: { label: 'Código de convite', placeholder: 'Ex.: K7P2QX9M', max: 12, code: true },
+    ok: 'Entrar',
+    busy: 'Entrando…',
+    run: async (v) => {
+      try {
+        return await GAPI().joinGroup(v.text);
+      } catch (err) {
+        if (err.code === 'permission-denied') err.userMsg = 'Esse convite não vale mais. Peça um novo para quem te convidou.';
+        throw err;
+      }
+    },
+  }).then((r) => {
+    if (!r) return;
+    G.wantGid = r.gid;
+    if (G.list.has(r.gid)) { G.wantGid = ''; openGroup(r.gid); }
+    toast(r.already ? `Você já está no grupo “${r.name}”.` : `Você entrou no grupo “${r.name}”!`);
+    if (!r.already) sfx('join');
+  });
+}
+
+function showInvite(gid, code) {
+  const g = groupOf(gid);
+  if (!g) return;
+  const invite = code || g.invite;
+  const box = document.createElement('div');
+  box.className = 'invite-box';
+  const shown = document.createElement('div');
+  shown.className = 'invite-code';
+  shown.textContent = invite;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'btn';
+  btn.textContent = 'Copiar';
+  btn.onclick = () => copy(invite, 'Convite copiado! Mande pros seus amigos.');
+  box.append(shown, btn);
+  ask({
+    title: `Convidar amigos para ${g.name}`,
+    text: 'Mande este código. No ScreenPLAY, a pessoa clica em “Entrar com convite” (na barra da esquerda) e cola o código.',
+    body: box,
+    ok: 'Pronto',
+    cancel: false,
+  });
+}
+
+// Nome e foto do grupo — só quem criou o grupo vê esta opção (e o Firebase só deixa o dono salvar).
+function groupSettingsDlg(gid) {
+  const g = groupOf(gid);
+  if (!g || g.ownerUid !== G.uid) return;
+  let photo = g.photo || '';
+  const top = document.createElement('div');
+  top.className = 'gs-photo';
+  const pic = document.createElement('button');
+  pic.type = 'button';
+  pic.className = 'gs-pic';
+  pic.title = 'Trocar foto do grupo';
+  const side = document.createElement('div');
+  side.className = 'gs-side';
+  const acts = document.createElement('div');
+  acts.className = 'row-actions';
+  const change = document.createElement('button');
+  change.type = 'button';
+  change.className = 'btn sm';
+  change.textContent = 'Trocar foto';
+  const remove = document.createElement('button');
+  remove.type = 'button';
+  remove.className = 'btn sm danger';
+  remove.textContent = 'Remover';
+  const note = document.createElement('small');
+  note.textContent = 'A foto aparece na barra da esquerda para todo mundo do grupo.';
+  acts.append(change, remove);
+  side.append(acts, note);
+  top.append(pic, side);
+  const paint = () => {
+    pic.style.backgroundImage = '';
+    pic.textContent = '';
+    if (photo) paintPhoto(pic, photo);
+    else pic.textContent = groupInitials(($('dlgInput') && $('dlgInput').value) || g.name);
+    remove.disabled = !photo;
+  };
+  const choose = async () => {
+    const url = await pickImage();
+    if (url) { photo = url; paint(); }
+  };
+  pic.onclick = choose;
+  change.onclick = choose;
+  remove.onclick = () => { photo = ''; paint(); };
+  paint();
+  ask({
+    title: 'Configurações do grupo',
+    top,
+    input: { label: 'Nome do grupo', value: g.name, max: 40 },
+    ok: 'Salvar',
+    busy: 'Salvando…',
+    run: async (v) => {
+      const patch = {};
+      if (v.text.trim() !== g.name) patch.name = v.text;
+      if (photo !== (g.photo || '')) patch.photo = photo;
+      if (Object.keys(patch).length) await GAPI().updateGroup(gid, patch);
+      return Object.keys(patch).length > 0;
+    },
+  }).then((changed) => { if (changed) toast('Grupo atualizado!'); });
+  $('dlgInput').addEventListener('input', paint);
+}
+
+async function resetInviteDlg(gid) {
+  const code = await ask({
+    title: 'Trocar o código de convite?',
+    text: 'O código atual para de funcionar. Quem já está no grupo continua nele.',
+    ok: 'Trocar código',
+    run: () => GAPI().newInvite(gid),
+  });
+  if (code) showInvite(gid, code);
+}
+
+function deleteGroupDlg(gid) {
+  const g = groupOf(gid);
+  if (!g) return;
+  ask({
+    title: `Apagar “${g.name}”?`,
+    text: 'O grupo, todos os canais e todas as mensagens somem para todo mundo. Não dá para desfazer.',
+    ok: 'Apagar grupo',
+    danger: true,
+    busy: 'Apagando tudo…',
+    run: async () => {
+      if (S.group && S.group.gid === gid) leaveRoom();
+      G.goneOk.add(gid);
+      if (G.gid === gid) openHome();
+      try {
+        await GAPI().deleteGroup(gid);
+      } catch (err) {
+        G.goneOk.delete(gid);
+        throw err;
+      }
+      return true;
+    },
+  }).then((done) => { if (done) toast(`O grupo “${g.name}” foi apagado.`); });
+}
+
+function leaveGroupDlg(gid) {
+  const g = groupOf(gid);
+  if (!g) return;
+  ask({
+    title: `Sair de “${g.name}”?`,
+    text: 'Você pode voltar depois com um convite.',
+    ok: 'Sair do grupo',
+    danger: true,
+    run: async () => {
+      if (S.group && S.group.gid === gid) leaveRoom();
+      G.goneOk.add(gid);
+      if (G.gid === gid) openHome();
+      try {
+        await GAPI().leaveGroup(gid);
+      } catch (err) {
+        G.goneOk.delete(gid);
+        throw err;
+      }
+      return true;
+    },
+  }).then((done) => { if (done) toast(`Você saiu do grupo “${g.name}”.`); });
+}
+
+function groupMenu(gid, x, y, anchor) {
+  const g = groupOf(gid);
+  if (!g) return;
+  const items = [{ label: 'Convidar pessoas', icon: ICON.invite, run: () => showInvite(gid) }];
+  if (g.ownerUid === G.uid) {
+    items.push(
+      '-',
+      { label: 'Criar canal de texto', icon: ICON.hash, run: () => newChannel('text', gid) },
+      { label: 'Criar sala de transmissão', icon: ICON.screen, run: () => newChannel('stream', gid) },
+      '-',
+      { label: 'Configurações do grupo', icon: ICON.cog, run: () => groupSettingsDlg(gid) },
+      { label: 'Trocar código de convite', icon: ICON.reload, run: () => resetInviteDlg(gid) },
+      '-',
+      { label: 'Apagar grupo', icon: ICON.trash, danger: true, run: () => deleteGroupDlg(gid) },
+    );
+  } else {
+    items.push('-', { label: 'Sair do grupo', icon: ICON.door, danger: true, run: () => leaveGroupDlg(gid) });
+  }
+  openMenu(items, x, y, anchor);
+}
+
+// ----- canais (só o dono do grupo) -----
+function newChannel(type, gid = G.gid) {
+  const text = type === 'text';
+  ask({
+    title: text ? 'Criar canal de texto' : 'Criar sala de transmissão',
+    text: text
+      ? 'Um canal para conversar por mensagens.'
+      : 'Uma sala fixa do grupo: quem quiser entra, e cada um transmite a tela quando quiser.',
+    input: { label: text ? 'Nome do canal' : 'Nome da sala', placeholder: text ? 'Ex.: jogos, memes, avisos' : 'Ex.: Sala 2, Jogatina', max: 30 },
+    ok: 'Criar',
+    run: (v) => GAPI().createChannel(gid, v.text, type),
+  }).then((cid) => {
+    if (cid && text && G.gid === gid && !openChat(cid, true)) G.wantCid = cid;   // ainda não chegou na lista
+  });
+}
+function channelMenu(ch, x, y, anchor) {
+  const text = ch.type === 'text';
+  openMenu([
+    { label: text ? 'Renomear canal' : 'Renomear sala', icon: ICON.pencil, run: () => renameChannelDlg(ch) },
+    { label: text ? 'Apagar canal' : 'Apagar sala', icon: ICON.trash, danger: true, run: () => deleteChannelDlg(ch) },
+  ], x, y, anchor);
+}
+function renameChannelDlg(ch) {
+  const gid = G.gid;
+  ask({
+    title: ch.type === 'text' ? 'Renomear canal' : 'Renomear sala',
+    input: { label: 'Nome', value: ch.name, max: 30 },
+    ok: 'Salvar',
+    run: (v) => GAPI().renameChannel(gid, ch.id, v.text),
+  });
+}
+function deleteChannelDlg(ch) {
+  const gid = G.gid;
+  const text = ch.type === 'text';
+  ask({
+    title: text ? `Apagar #${ch.name}?` : `Apagar a sala “${ch.name}”?`,
+    text: text
+      ? 'O canal e todas as mensagens dele somem para todo mundo. Não dá para desfazer.'
+      : 'A sala some para todo mundo do grupo.',
+    ok: 'Apagar',
+    danger: true,
+    busy: 'Apagando…',
+    run: async () => {
+      if (S.group && S.group.cid === ch.id) leaveRoom();
+      await GAPI().deleteChannel(gid, ch.id);
+      return true;
+    },
+  });
+}
+
+// ----- menu (clique no nome do grupo, nos "…" ou com o botão direito) -----
+let menuAnchor = null;
+const menuOpen = () => !$('menu').classList.contains('hidden');
+function openMenu(items, x, y, anchor) {
+  closeMenu();
+  const m = $('menu');
+  m.textContent = '';
+  for (const it of items) {
+    if (it === '-') { m.appendChild(document.createElement('hr')); continue; }
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.setAttribute('role', 'menuitem');
+    if (it.danger) b.className = 'danger';
+    b.innerHTML = svg(it.icon, 16);
+    const t = document.createElement('span');
+    t.textContent = it.label;
+    b.appendChild(t);
+    b.onclick = () => { closeMenu(); it.run(); };
+    m.appendChild(b);
+  }
+  menuAnchor = anchor || null;
+  if (menuAnchor) menuAnchor.classList.add('open');
+  m.classList.remove('hidden');
+  m.style.left = Math.max(8, Math.min(x, innerWidth - m.offsetWidth - 8)) + 'px';
+  m.style.top = Math.max(8, Math.min(y, innerHeight - m.offsetHeight - 8)) + 'px';
+}
+function closeMenu() {
+  $('menu').classList.add('hidden');
+  if (menuAnchor) menuAnchor.classList.remove('open');
+  menuAnchor = null;
+}
+
+// ----- caixinha de pergunta -----
+// ask({ title, text, top, input: {label, value, placeholder, max, code}, body, ok, danger, cancel, busy, run })
+// Resolve com o que run() devolver (ou os valores digitados), ou null se cancelar.
+let dlg = null;
+function ask(opts) {
+  closeMenu();
+  if (dlg) closeDlg(null);
+  return new Promise((resolve) => {
+    dlg = { resolve, run: opts.run, busy: false, busyText: opts.busy || '' };
+    $('dlgTitle').textContent = opts.title;
+    $('dlgText').textContent = opts.text || '';
+    $('dlgText').classList.toggle('hidden', !opts.text);
+    const body = $('dlgBody');
+    body.textContent = '';
+    if (opts.top) body.appendChild(opts.top);
+    let input = null;
+    if (opts.input) {
+      const label = document.createElement('label');
+      label.className = 'field';
+      const span = document.createElement('span');
+      span.textContent = opts.input.label;
+      input = document.createElement('input');
+      input.type = 'text';
+      input.id = 'dlgInput';
+      input.maxLength = opts.input.max || 40;
+      input.value = opts.input.value || '';
+      input.placeholder = opts.input.placeholder || '';
+      input.autocomplete = 'off';
+      input.spellcheck = false;
+      if (opts.input.code) {
+        input.classList.add('code-input');
+        input.addEventListener('input', () => { input.value = input.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8); });
+      }
+      label.append(span, input);
+      body.appendChild(label);
+    }
+    if (opts.body) body.appendChild(opts.body);
+    $('dlgOk').textContent = opts.ok || 'OK';
+    $('dlgOk').className = 'btn ' + (opts.danger ? 'live' : 'primary');
+    $('dlgOk').disabled = false;
+    $('dlgCancel').classList.toggle('hidden', opts.cancel === false);
+    dlgMsg('');
+    $('dlg').classList.remove('hidden');
+    setTimeout(() => {
+      if (input) { input.focus(); input.select(); } else $('dlgOk').focus();
+    }, 0);
+  });
+}
+function dlgMsg(text, kind = 'err') {
+  const el = $('dlgMsg');
+  el.textContent = text || '';
+  el.className = 'msg' + (text && kind ? ' ' + kind : '');
+  el.classList.toggle('hidden', !text);
+}
+function closeDlg(value) {
+  if (!dlg) return;
+  const d = dlg;
+  dlg = null;
+  $('dlg').classList.add('hidden');
+  d.resolve(value);
+}
+
+$('dlgForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const d = dlg;
+  if (!d || d.busy) return;
+  const values = { text: $('dlgInput') ? $('dlgInput').value : '' };
+  if (!d.run) { closeDlg(values); return; }
+  d.busy = true;
+  $('dlgOk').disabled = true;
+  dlgMsg(d.busyText, '');
+  try {
+    const result = await d.run(values);
+    if (dlg === d) closeDlg(result === undefined ? values : result);
+  } catch (err) {
+    if (!err.userMsg && !GROUP_ERRORS[err.code]) console.warn('[grupos]', err);
+    if (dlg === d) dlgMsg(err.userMsg || groupErr(err));
+  } finally {
+    d.busy = false;
+    if (dlg === d) $('dlgOk').disabled = false;
+  }
+});
+$('dlgCancel').onclick = () => { if (dlg && !dlg.busy) closeDlg(null); };
+$('dlg').addEventListener('mousedown', (e) => { if (e.target === $('dlg') && dlg && !dlg.busy) closeDlg(null); });
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (menuOpen()) closeMenu();
+  else if (dlg && !dlg.busy) closeDlg(null);
+});
+document.addEventListener('mousedown', (e) => {
+  if (menuOpen() && !$('menu').contains(e.target) && !(menuAnchor && menuAnchor.contains(e.target))) closeMenu();
+}, true);
+window.addEventListener('blur', closeMenu);
+window.addEventListener('resize', closeMenu);
+
+// ----- dica com o nome do grupo (passar o mouse na barra da esquerda) -----
+function showTip(el) {
+  const t = $('tip');
+  t.textContent = el.dataset.tip;
+  t.classList.remove('hidden');
+  const r = el.getBoundingClientRect();
+  t.style.left = r.right + 14 + 'px';
+  t.style.top = r.top + r.height / 2 - t.offsetHeight / 2 + 'px';
+}
+const hideTip = () => $('tip').classList.add('hidden');
+$('rail').addEventListener('mouseover', (e) => {
+  const el = e.target.closest('[data-tip]');
+  if (el) showTip(el);
+});
+$('rail').addEventListener('mouseout', (e) => {
+  const el = e.target.closest('[data-tip]');
+  if (el && !el.contains(e.relatedTarget)) hideTip();
+});
+$('rail').addEventListener('mouseleave', hideTip);
+$('rail').addEventListener('scroll', hideTip);
+
+// ----- eventos -----
+$('homeBtn').onclick = () => { hideTip(); openHome(); };
+$('addGroupBtn').onclick = () => { hideTip(); createGroupDlg(); };
+$('joinGroupBtn').onclick = () => { hideTip(); joinGroupDlg(); };
+$('welcomeCreate').onclick = createGroupDlg;
+$('welcomeJoin').onclick = joinGroupDlg;
+$('groupHead').onclick = () => {
+  if (menuOpen() && menuAnchor === $('groupHead')) { closeMenu(); return; }
+  const r = $('groupHead').getBoundingClientRect();
+  groupMenu(G.gid, r.left + 8, r.bottom + 6, $('groupHead'));
+};
+$('voiceLeave').onclick = () => leaveRoom();
+$('voiceOpen').onclick = () => {
+  if (!S.entered) return;
+  if (G.gid !== S.group.gid) openGroup(S.group.gid);   // a sala é de outro grupo: abre ele
+  showView('room');
+};
+for (const b of document.querySelectorAll('.members-toggle')) {
+  b.onclick = () => {
+    membersOn = !membersOn;
+    store('sp-members', membersOn ? '1' : '0');
+    renderMembers();
+  };
+}
+$('voiceShare').onclick = () => {
+  if (S.localStream) stopShare();
+  else if (S.entered) startShare();
+};
+$('msgInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendChat(); }
+});
+$('msgInput').addEventListener('input', sizeComposer);
+$('composer').addEventListener('submit', (e) => { e.preventDefault(); sendChat(); });
+$('msgList').addEventListener('scroll', () => {
+  const box = $('msgList');
+  if (!box.clientHeight) return;
+  M.atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+  if (box.scrollTop < 120) loadOlder();
+});
+// De minuto em minuto: tira das salas quem "sumiu" e passa pra offline quem parou de avisar.
+setInterval(() => { if (G.gid) renderChannels(); }, 60000);
+
+// ---------------- perfis (foto e efeito no nome) ----------------
+// Cada conta tem um perfil público (foto + efeito no nome). O app só ouve o perfil de quem aparece
+// na tela (chat, salas, listas) e redesenha quando algum muda.
+const FX = { fire: 'Fogo', bolt: 'Raio', water: 'Água', ice: 'Gelo', neon: 'Neon', rainbow: 'Arco-íris' };
+const PHOTO_RE = /^data:image\/(webp|jpeg|png);base64,[A-Za-z0-9+/=]+$/;
+const PF = { map: new Map(), subs: new Map(), raf: 0 };
+
+function profileOf(uid) {
+  if (!uid) return null;
+  if (!PF.subs.has(uid) && window.SPAuth && window.SPAuth.profile()) {
+    PF.subs.set(uid, window.SPAuth.watchProfile(uid, (prof) => {
+      PF.map.set(uid, prof);
+      profilesChanged();
+    }));
+  }
+  return PF.map.get(uid) || null;
+}
+function stopProfiles() {
+  for (const unsub of PF.subs.values()) { try { unsub(); } catch {} }
+  PF.subs.clear();
+  PF.map.clear();
+}
+function fxClass(uid) {
+  const prof = profileOf(uid);
+  return prof && FX[prof.fx] ? `fx fx-${prof.fx}` : '';
+}
+function paintPhoto(el, photo) {
+  if (!PHOTO_RE.test(photo)) return false;
+  el.style.backgroundImage = `url("${photo}")`;
+  el.style.backgroundSize = 'cover';
+  el.style.backgroundPosition = 'center';
+  el.textContent = '';
+  return true;
+}
+// Bolinha com a foto da pessoa (ou a inicial do nome, num tom de cinza).
+function paintAv(el, uid, name) {
+  const prof = profileOf(uid);
+  el.style.background = colorOf(uid || name || '?');
+  if (!(prof && prof.photo && paintPhoto(el, prof.photo))) el.textContent = initial(name);
+}
+function profilesChanged() {
+  if (PF.raf) return;
+  PF.raf = requestAnimationFrame(() => {
+    PF.raf = 0;
+    paintMe();
+    if (M.cid && M.loaded) renderMessages();
+    if (S.entered) renderPeople();
+    renderChannels();
+  });
+}
+
+// Escolhe uma imagem do PC e devolve um quadrado 160x160 (WEBP) pronto pra guardar.
+function pickImage() {
+  return new Promise((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/png,image/jpeg,image/webp,image/gif';
+    input.addEventListener('cancel', () => resolve(null));
+    input.addEventListener('change', async () => {
+      const file = input.files && input.files[0];
+      if (!file) return resolve(null);
+      try {
+        resolve(await squarePhoto(file));
+      } catch {
+        toast('Não consegui abrir essa imagem. Tente outra (PNG, JPG, WEBP ou GIF).', 'err');
+        resolve(null);
+      }
+    });
+    input.click();
+  });
+}
+async function squarePhoto(file, size = 160) {
+  if (file.size > 25 * 1024 * 1024) throw new Error('grande demais');
+  const bmp = await createImageBitmap(file);
+  const side = Math.min(bmp.width, bmp.height);
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(bmp, (bmp.width - side) / 2, (bmp.height - side) / 2, side, side, 0, 0, size, size);
+  bmp.close();
+  let url = canvas.toDataURL('image/webp', 0.86);
+  if (!url.startsWith('data:image/webp')) url = canvas.toDataURL('image/jpeg', 0.88);
+  return url;
+}
+
+// Meu nome e foto no rodapé da coluna dos canais (e no Perfil, se estiver aberto).
+function paintMe() {
+  const me = window.SPAuth && window.SPAuth.profile();
+  if (!me || !me.nick) return;
+  $('meName').textContent = me.nick;
+  $('meName').className = fxClass(me.uid);
+  paintAv($('meAv'), me.uid, me.nick);
+  if (!$('settings').classList.contains('hidden')) renderProfileCard();
+}
+
+// Aba Perfil das configurações.
+function renderProfileCard() {
+  const me = window.SPAuth && window.SPAuth.profile();
+  if (!me || !me.nick) return;
+  const mine = profileOf(me.uid) || { photo: '', fx: '' };
+  paintAv($('pfAv'), me.uid, me.nick);
+  $('pfName').textContent = me.nick;
+  $('pfName').className = fxClass(me.uid);
+  $('pfEmail').textContent = me.email;
+  $('pfRemove').disabled = !mine.photo;
+  const grid = $('fxGrid');
+  grid.textContent = '';
+  for (const [key, label] of [['', 'Nenhum'], ...Object.entries(FX)]) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'fx-opt' + ((mine.fx || '') === key ? ' sel' : '');
+    const sample = document.createElement('span');
+    sample.className = 'fx-sample' + (key ? ` fx fx-${key}` : '');
+    sample.textContent = me.nick;
+    const name = document.createElement('small');
+    name.textContent = label;
+    b.append(sample, name);
+    b.onclick = () => {
+      if ((mine.fx || '') === key) return;
+      saveMine({ fx: key }, key ? `Efeito “${label}” no seu nome!` : 'Seu nome voltou ao normal.');
+    };
+    grid.appendChild(b);
+  }
+}
+// Salva meu perfil e já mostra a mudança (volta atrás se o Firebase recusar).
+async function saveMine(patch, okMsg) {
+  const me = window.SPAuth.profile();
+  if (!me) return;
+  const before = PF.map.get(me.uid) || { photo: '', fx: '' };
+  PF.map.set(me.uid, { ...before, ...patch });
+  profilesChanged();
+  try {
+    await window.SPAuth.saveProfile(patch);
+    if (okMsg) toast(okMsg);
+  } catch (err) {
+    PF.map.set(me.uid, before);
+    profilesChanged();
+    toast(groupErr(err, 'Não consegui salvar seu perfil'), 'err');
+  }
+}
+async function changeMyPhoto() {
+  const url = await pickImage();
+  if (url) saveMine({ photo: url }, 'Foto de perfil atualizada!');
+}
+
+$('pfAv').onclick = changeMyPhoto;
+$('pfPhoto').onclick = changeMyPhoto;
+$('pfRemove').onclick = () => saveMine({ photo: '' }, 'Foto de perfil removida.');
+$('meAv').onclick = () => openSettings('perfil');
+document.querySelector('.user-panel .me-text').onclick = () => openSettings('perfil');
+
+// ---------------- online / offline ----------------
+// Com o app aberto, cada um avisa no Firebase a cada 4 min; ao fechar o app ou sair da conta, avisa
+// que saiu. Quem parou de avisar há mais de 9 min (PC desligou, app travou) aparece offline.
+const PRESENCE_BEAT = 4 * 60 * 1000;
+const PRESENCE_FRESH = 9 * 60 * 1000;
+const PR = { map: new Map(), subs: new Map(), timer: null, uid: '', denied: false, raf: 0 };
+
+function presenceOf(uid) {
+  if (!uid) return null;
+  if (!PR.subs.has(uid) && window.SPAuth && window.SPAuth.profile()) {
+    PR.subs.set(uid, window.SPAuth.watchPresence(uid, (st, err) => {
+      if (st) PR.map.set(uid, st);
+      else if (err && err.code === 'permission-denied') PR.denied = true;
+      renderMembersSoon();
+    }));
+  }
+  return PR.map.get(uid) || null;
+}
+function isOnline(uid) {
+  if (uid && uid === PR.uid) return true;   // eu, com o app aberto
+  const st = presenceOf(uid);
+  return !!(st && st.on && Date.now() - st.at < PRESENCE_FRESH);
+}
+function startPresence(uid) {
+  if (PR.uid === uid && PR.timer) return;
+  stopPresence();
+  PR.uid = uid;
+  const beat = () => {
+    window.SPAuth.setPresence(true).catch((err) => {
+      if (err && err.code === 'permission-denied') { PR.denied = true; renderMembersSoon(); }
+    });
+  };
+  beat();
+  PR.timer = setInterval(beat, PRESENCE_BEAT);
+}
+function stopPresence() {
+  clearInterval(PR.timer);
+  for (const unsub of PR.subs.values()) { try { unsub(); } catch {} }
+  Object.assign(PR, { map: new Map(), subs: new Map(), timer: null, uid: '', denied: false });
+}
+// Avisa "offline" (sair da conta, fechar o app, reiniciar pra atualizar). Espera no máximo `ms`.
+function goOffline(ms = 1200) {
+  clearInterval(PR.timer);
+  PR.timer = null;
+  if (!PR.uid || !window.SPAuth.profile()) return Promise.resolve();
+  return Promise.race([window.SPAuth.setPresence(false).catch(() => {}), sleep(ms)]);
+}
+function renderMembersSoon() {
+  if (PR.raf) return;
+  PR.raf = requestAnimationFrame(() => {
+    PR.raf = 0;
+    renderMembers();
+  });
+}
+// Fechando a janela: sai da sala, avisa que ficou offline e libera o fechamento.
+if (IS_APP && window.tav.onClosing) {
+  window.tav.onClosing(async () => {
+    const inRoom = !!(S.peer || S.group);
+    if (inRoom) leaveRoom();
+    await Promise.all([goOffline(1200), sleep(inRoom ? 500 : 0)]);   // o "saí" da sala precisa de um instante
+    window.tav.canClose();
+  });
+}
+
+// ---------------- conta (entrar / criar conta) ----------------
+const AUTH_ERRORS = {
+  'auth/invalid-email': 'Esse e-mail não parece válido.',
+  'auth/missing-email': 'Digite seu e-mail.',
+  'auth/invalid-credential': 'E-mail ou senha incorretos.',
+  'auth/invalid-login-credentials': 'E-mail ou senha incorretos.',
+  'auth/wrong-password': 'E-mail ou senha incorretos.',
+  'auth/user-not-found': 'E-mail ou senha incorretos.',
+  'auth/missing-password': 'Digite sua senha.',
+  'auth/email-already-in-use': 'Já existe uma conta com esse e-mail. Use “Entrar” ou “Esqueci minha senha”.',
+  'auth/weak-password': 'A senha precisa ter pelo menos 6 caracteres.',
+  'auth/too-many-requests': 'Muitas tentativas seguidas. Espere um pouco e tente de novo.',
+  'auth/network-request-failed': 'Sem conexão com a internet. Confira e tente de novo.',
+  'auth/user-disabled': 'Essa conta foi desativada.',
+  'auth/operation-not-allowed': 'O login por e-mail ainda não foi ativado no Firebase.',
+  'auth/configuration-not-found': 'O login por e-mail ainda não foi ativado no Firebase.',
+  'nick/invalid': 'O usuário precisa ter de 3 a 20 caracteres: letras, números, espaço, _ - .',
+  'nick/taken': 'Esse usuário já tem dono. Escolha outro.',
+  'permission-denied': 'O Firebase recusou salvar o usuário. Confira as regras do Firestore.',
+  'not-found': 'O banco de dados (Firestore) ainda não foi criado no Firebase.',
+  'unavailable': 'Não consegui acessar o banco de dados. Confira sua internet (ou se o Firestore já foi criado no Firebase).',
+};
+function authErr(err) {
+  return AUTH_ERRORS[err && err.code] || ('Não deu certo: ' + ((err && (err.code || err.message)) || 'erro desconhecido'));
+}
+function authMsg(text, kind) {
+  const el = $('authMsg');
+  el.textContent = text || '';
+  el.className = 'msg' + (kind ? ' ' + kind : '');
+}
+let authBusy = false;
+function setAuthBusy(on) {
+  authBusy = on;
+  for (const b of $('auth').querySelectorAll('form button')) b.disabled = on;
+}
+
+// Qual parte mostrar: 'loading' | 'login' | 'signup' | 'nick'.
+function showAuth(view) {
+  $('auth').classList.remove('hidden');
+  $('app').classList.add('hidden');
+  closeMenu();
+  closeDlg(null);
+  $('authLoading').classList.toggle('hidden', view !== 'loading');
+  for (const [id, v] of [['loginForm', 'login'], ['signupForm', 'signup'], ['nickForm', 'nick']]) {
+    $(id).classList.toggle('hidden', view !== v);
+  }
+  authMsg('');
+  const first = { login: 'loginEmail', signup: 'signupNick', nick: 'nickOnly' }[view];
+  if (first) setTimeout(() => $(first).focus(), 0);
+}
+
+function applyNick(me) {
+  S.myName = me.nick;
+  paintMe();
+  syncMemberNames();
+}
+
+function showApp() {
+  $('auth').classList.add('hidden');
+  $('app').classList.remove('hidden');
+}
+
+function onAccountChange(me) {
+  if (!me) {
+    if (S.peer || S.group) leaveRoom();
+    stopGroups();
+    stopProfiles();
+    stopPresence();
+    $('loginPass').value = '';
+    showAuth('login');
+    return;
+  }
+  if (!me.nick) {
+    if (!authBusy) showAuth('nick');   // criando a conta: o nick chega já já
+    return;
+  }
+  applyNick(me);
+  startPresence(me.uid);
+  startGroups(me.uid);
+  showApp();
+}
+
+async function startAccount() {
+  showAuth('loading');
+  if (!window.SPAuth) {
+    $('authLoading').classList.add('hidden');
+    authMsg('Não consegui carregar o login. Feche e abra o ScreenPLAY de novo.', 'err');
+    return;
+  }
+  let flags = {};
+  if (IS_APP && window.tav.devFlags) {
+    try { flags = await window.tav.devFlags(); } catch { flags = {}; }
+  }
+  window.SPAuth.onChange(onAccountChange);
+  try {
+    await window.SPAuth.init({ emulator: flags.emulator || '' });
+  } catch (err) {
+    $('authLoading').classList.add('hidden');
+    authMsg(authErr(err), 'err');
+  }
+}
+
+async function logout() {
+  closeSettings();
+  if (S.peer || S.group) leaveRoom();
+  await goOffline();
+  stopGroups();
+  stopProfiles();
+  stopPresence();
+  try { await window.SPAuth.signOut(); } catch (err) { toast(authErr(err), 'err'); }
+}
+
+$('loginForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (authBusy) return;
+  const email = $('loginEmail').value.trim();
+  const pass = $('loginPass').value;
+  if (!email) return authMsg('Digite seu e-mail.', 'err');
+  if (!pass) return authMsg('Digite sua senha.', 'err');
+  setAuthBusy(true);
+  authMsg('Entrando…');
+  try {
+    await window.SPAuth.signIn(email, pass);
+  } catch (err) {
+    authMsg(authErr(err), 'err');
+  } finally {
+    setAuthBusy(false);
+  }
+});
+
+$('signupForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (authBusy) return;
+  const nickRaw = $('signupNick').value;
+  const email = $('signupEmail').value.trim();
+  const pass = $('signupPass').value;
+  try { window.SPAuth.checkNick(nickRaw); } catch (err) { return authMsg(authErr(err), 'err'); }
+  if (!email) return authMsg('Digite seu e-mail.', 'err');
+  if (pass.length < 6) return authMsg('A senha precisa ter pelo menos 6 caracteres.', 'err');
+  if (pass !== $('signupPass2').value) return authMsg('As duas senhas não são iguais.', 'err');
+  setAuthBusy(true);
+  authMsg('Criando sua conta…');
+  try {
+    await window.SPAuth.signUp(nickRaw, email, pass);
+    $('signupPass').value = '';
+    $('signupPass2').value = '';
+    toast(`Conta criada! Bem-vindo, ${window.SPAuth.profile().nick} 👋`);
+  } catch (err) {
+    authMsg(authErr(err), 'err');
+  } finally {
+    setAuthBusy(false);
+  }
+});
+
+$('nickForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (authBusy) return;
+  setAuthBusy(true);
+  try {
+    await window.SPAuth.setNick($('nickOnly').value);
+  } catch (err) {
+    authMsg(authErr(err), 'err');
+  } finally {
+    setAuthBusy(false);
+  }
+});
+
+$('forgotBtn').onclick = async () => {
+  const email = $('loginEmail').value.trim();
+  if (!email) {
+    authMsg('Digite seu e-mail no campo acima e clique de novo em “Esqueci minha senha”.', 'err');
+    $('loginEmail').focus();
+    return;
+  }
+  setAuthBusy(true);
+  try {
+    await window.SPAuth.resetPassword(email);
+    authMsg('Se existir uma conta com esse e-mail, mandamos um link pra criar uma senha nova. Olhe também o spam.', 'ok');
+  } catch (err) {
+    authMsg(authErr(err), 'err');
+  } finally {
+    setAuthBusy(false);
+  }
+};
+$('toSignup').onclick = () => {
+  showAuth('signup');
+  if ($('loginEmail').value) $('signupEmail').value = $('loginEmail').value;
+};
+$('toLogin').onclick = () => {
+  showAuth('login');
+  if ($('signupEmail').value) $('loginEmail').value = $('signupEmail').value;
+};
+$('nickLogout').onclick = logout;
+$('setLogout').onclick = logout;
+
 // ---------------- configurações (engrenagem) ----------------
 function openSettings(tab) {
   $('settings').classList.remove('hidden');
-  showSettingsTab(tab || 'geral');
+  showSettingsTab(tab || 'perfil');
   fillSettings();
   document.addEventListener('keydown', onSettingsKey);
 }
@@ -1485,20 +3123,21 @@ function showSettingsTab(tab) {
   for (const page of document.querySelectorAll('.set-page')) page.classList.toggle('hidden', page.dataset.page !== tab);
   $('settings').querySelector('.set-body').scrollTop = 0;
 }
-function copyOptions(from, to) {
-  to.textContent = '';
-  for (const o of from.options) to.appendChild(new Option(o.textContent, o.value));
-  to.value = from.value;
-}
 
 async function fillSettings() {
-  $('setName').value = store('tav-name') || $('nameInput').value.trim();
-  copyOptions($('qualitySel'), $('setQuality'));
-  copyOptions($('encoderSel'), $('setEncoder'));
-  $('setAudio').checked = $('audioChk').checked;
+  const me = window.SPAuth && window.SPAuth.profile();
+  $('setName').value = me ? me.nick : '';
+  $('setName').disabled = !me;
+  $('setEmail').textContent = me ? me.email : 'Você ainda não entrou numa conta.';
+  $('setLogout').classList.toggle('hidden', !me);
+  const prefs = sharePrefs();
+  $('setQuality').value = prefs.quality;
+  $('setEncoder').value = prefs.encoder;
+  $('setAudio').checked = prefs.audio;
   const vol = Math.round(sfxVolume * 100);
   $('setSfxVol').value = vol;
   $('setSfxVolText').textContent = vol + '%';
+  renderProfileCard();
   renderThemeEditor(currentTheme());
   $('updateStatus').textContent = 'O ScreenPLAY se atualiza sozinho sempre que abre.';
   let app = null;
@@ -1530,26 +3169,36 @@ async function changeAutoStart(patch) {
   }
 }
 
-// Trocar o nome: vale na hora, inclusive dentro da sala.
-function applyName() {
-  const raw = $('setName').value.trim();
-  if (!raw) {
-    $('setName').value = store('tav-name') || S.myName || '';
+// Trocar o nick: reserva o novo (tem que estar livre) e vale na hora, inclusive dentro da sala.
+async function applyName() {
+  const me = window.SPAuth && window.SPAuth.profile();
+  if (!me) return;
+  let nick;
+  try {
+    nick = window.SPAuth.checkNick($('setName').value);
+  } catch (err) {
+    toast(authErr(err), 'err');
+    $('setName').value = me.nick;
     return;
   }
-  const name = cleanName(raw);
-  $('setName').value = name;
-  $('nameInput').value = name;
-  if (name === store('tav-name')) return;
-  store('tav-name', name);
-  if (S.peer && S.code) {
-    S.myName = name;
-    const me = S.view.get(S.myId);
-    if (me) me.name = name;
-    renderPeople();
-    sendState();
+  if (nick.display === me.nick) return;
+  $('setName').disabled = true;
+  try {
+    const updated = await window.SPAuth.setNick(nick.display);
+    applyNick(updated);
+    if (S.peer && S.code) {
+      const mine = S.view.get(S.myId);
+      if (mine) mine.name = updated.nick;
+      renderPeople();
+      sendState(true);
+    }
+    toast(`Usuário alterado para ${updated.nick}`);
+  } catch (err) {
+    toast(authErr(err), 'err');
+    $('setName').value = me.nick;
+  } finally {
+    $('setName').disabled = false;
   }
-  toast(`Nome alterado para ${name}`);
 }
 
 async function checkUpdateNow() {
@@ -1688,9 +3337,9 @@ $('setClose').onclick = closeSettings;
 $('settings').addEventListener('mousedown', (e) => { if (e.target === $('settings')) closeSettings(); });   // clique fora fecha
 $('setName').addEventListener('change', applyName);
 $('setName').addEventListener('keydown', (e) => { if (e.key === 'Enter') e.target.blur(); });
-$('setQuality').addEventListener('change', (e) => { $('qualitySel').value = e.target.value; store('tav-quality', e.target.value); });
-$('setEncoder').addEventListener('change', (e) => { $('encoderSel').value = e.target.value; store('tav-encoder', e.target.value); });
-$('setAudio').addEventListener('change', (e) => { $('audioChk').checked = e.target.checked; store('tav-audio', e.target.checked ? '1' : '0'); });
+$('setQuality').addEventListener('change', (e) => store('tav-quality', e.target.value));
+$('setEncoder').addEventListener('change', (e) => store('tav-encoder', e.target.value));
+$('setAudio').addEventListener('change', (e) => store('tav-audio', e.target.checked ? '1' : '0'));
 $('setSfxVol').addEventListener('input', (e) => {
   sfxVolume = Number(e.target.value) / 100;
   store('tav-sfx-vol', String(e.target.value));
@@ -1705,21 +3354,8 @@ $('checkUpdateBtn').onclick = checkUpdateNow;
 $('openReleases').onclick = () => { if (IS_APP && window.tav.openReleases) window.tav.openReleases(); };
 
 // ---------------- eventos da página ----------------
-$('createBtn').onclick = () => createRoom();
-$('joinBtn').onclick = joinRoom;
-$('codeInput').addEventListener('input', (e) => { e.target.value = normCode(e.target.value); });
-$('codeInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') joinRoom(); });
-$('nameInput').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') (normCode($('codeInput').value).length === 6 ? joinRoom() : createRoom());
-});
-$('shareBtn').onclick = () => (S.localStream ? stopShare() : startShare());
-$('leaveBtn').onclick = () => leaveRoom();
-$('copyCodeBtn').onclick = () => copy(S.code, 'Código copiado! Mande pros seus amigos.');
-$('qualitySel').addEventListener('change', (e) => store('tav-quality', e.target.value));
-$('encoderSel').addEventListener('change', (e) => store('tav-encoder', e.target.value));
-$('audioChk').addEventListener('change', (e) => store('tav-audio', e.target.checked ? '1' : '0'));
 if (!IS_APP) {
-  $('audioNote').textContent = 'Na janela que abrir, ative “Compartilhar áudio” (Tela inteira ou Guia). O microfone nunca vai junto.';
+  $('setAudioNote').textContent = 'Na janela que abrir, ative “Compartilhar áudio” (Tela inteira ou Guia). O microfone nunca vai junto.';
 }
 
 // Versão e aviso de "atualização pronta" (baixada em segundo plano com o app aberto).
@@ -1731,8 +3367,8 @@ if (IS_APP) {
   });
 }
 $('updateBtn').onclick = () => {
-  if (S.peer) leaveRoom();
-  setTimeout(() => window.tav.restartToUpdate(), 400);
+  if (S.peer || S.group) leaveRoom();
+  goOffline(1000).then(() => window.tav.restartToUpdate());
 };
 $('updateLater').onclick = () => {
   $('updateBar').classList.add('hidden');
@@ -1744,9 +3380,5 @@ window.addEventListener('pagehide', () => {
   try { if (S.peer) S.peer.destroy(); } catch {}
 });
 
-// Preferências salvas.
-$('nameInput').value = store('tav-name') || '';
-if (QUALITY[store('tav-quality')]) $('qualitySel').value = store('tav-quality');
-if (store('tav-encoder') === 'cpu') $('encoderSel').value = 'cpu';
-if (store('tav-audio') === '0') $('audioChk').checked = false;
-($('nameInput').value ? $('createBtn') : $('nameInput')).focus();
+// Abre pela conta: se já entrou antes, vai direto pra tela inicial.
+startAccount();

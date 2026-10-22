@@ -1,0 +1,166 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function myName() { return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.name; }
+    function groupOf(gid) { return get(/databases/$(database)/documents/groups/$(gid)).data; }
+    function groupAfter(gid) { return getAfter(/databases/$(database)/documents/groups/$(gid)).data; }
+    function isMemberOf(gid) { return signedIn() && request.auth.uid in groupOf(gid).memberUids; }
+    function isOwnerOf(gid) { return signedIn() && groupOf(gid).ownerUid == request.auth.uid; }
+    function validName(n, max) { return n is string && n.size() >= 1 && n.size() <= max; }
+    // Foto pequena guardada como texto (data URL), já reduzida pelo app.
+    function validPhoto(p) {
+      return p is string && p.size() <= 150000
+        && (p == '' || p.matches('^data:image/(webp|jpeg|png);base64,[A-Za-z0-9+/=]+$'));
+    }
+
+    // Nick reservado: o ID do documento é o nick em minúsculas.
+    match /usernames/{nick} {
+      allow read: if true;
+      allow create: if request.auth != null
+        && request.resource.data.keys().hasOnly(['uid', 'name'])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.name is string
+        && request.resource.data.name.size() >= 3
+        && request.resource.data.name.size() <= 20
+        && request.resource.data.name.lower() == nick
+        && getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.nameLower == nick;
+      allow delete: if request.auth != null && resource.data.uid == request.auth.uid;
+    }
+
+    // Perfil de cada conta.
+    match /users/{uid} {
+      allow read: if request.auth != null;
+      allow create, update: if request.auth != null
+        && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['name', 'nameLower'])
+        && getAfter(/databases/$(database)/documents/usernames/$(request.resource.data.nameLower)).data.uid == uid;
+    }
+
+    // Perfil público de cada conta: foto e efeito no nome. Todo mundo logado vê; cada um muda o seu.
+    match /profiles/{uid} {
+      allow read: if signedIn();
+      allow create, update: if signedIn() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['photo', 'fx'])
+        && (!('photo' in request.resource.data) || validPhoto(request.resource.data.photo))
+        && (!('fx' in request.resource.data) || request.resource.data.fx in ['', 'fire', 'bolt', 'water', 'ice', 'neon', 'rainbow']);
+    }
+
+    // Online/offline: cada um avisa que está com o app aberto (a cada 4 min) e que fechou.
+    match /presence/{uid} {
+      allow read: if signedIn();
+      allow create, update: if signedIn() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['on', 'at'])
+        && request.resource.data.on is bool
+        && request.resource.data.at == request.time;
+    }
+
+    // Código de convite -> grupo. Quem tem o código acha o grupo; ninguém consegue listar os códigos.
+    match /invites/{code} {
+      allow get: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['gid'])
+        && groupAfter(request.resource.data.gid).ownerUid == request.auth.uid
+        && groupAfter(request.resource.data.gid).invite == code;
+      allow delete: if signedIn() && groupOf(resource.data.gid).ownerUid == request.auth.uid;
+    }
+
+    // Grupo: só quem é membro vê. Só o dono muda nome/foto/convite e apaga.
+    // Qualquer um entra se souber o convite atual; cada um só sai ou troca o próprio nome.
+    match /groups/{gid} {
+      function changed() { return request.resource.data.diff(resource.data).affectedKeys(); }
+      function added() { return request.resource.data.memberUids.toSet().difference(resource.data.memberUids.toSet()); }
+      function removed() { return resource.data.memberUids.toSet().difference(request.resource.data.memberUids.toSet()); }
+      function membersChanged() { return request.resource.data.members.diff(resource.data.members).affectedKeys(); }
+      function me() { return request.resource.data.members[request.auth.uid]; }
+
+      function ownerEdit() {
+        return resource.data.ownerUid == request.auth.uid
+          && changed().hasOnly(['name', 'photo', 'invite', 'memberUids', 'members'])
+          && validName(request.resource.data.name, 40)
+          && (!('photo' in request.resource.data) || validPhoto(request.resource.data.photo))
+          && request.auth.uid in request.resource.data.memberUids
+          && added().size() == 0
+          && getAfter(/databases/$(database)/documents/invites/$(request.resource.data.invite)).data.gid == gid;
+      }
+      function selfJoin() {
+        return changed().hasOnly(['memberUids', 'members'])
+          && added().size() == 1 && added().hasOnly([request.auth.uid])
+          && removed().size() == 0
+          && membersChanged().hasOnly([request.auth.uid])
+          && me().keys().hasOnly(['name', 'via'])
+          && me().via == resource.data.invite
+          && me().name == myName()
+          && request.resource.data.memberUids.size() <= 50;
+      }
+      function selfLeave() {
+        return resource.data.ownerUid != request.auth.uid
+          && changed().hasOnly(['memberUids', 'members'])
+          && removed().size() == 1 && removed().hasOnly([request.auth.uid])
+          && added().size() == 0
+          && membersChanged().hasOnly([request.auth.uid])
+          && !(request.auth.uid in request.resource.data.members);
+      }
+      function selfRename() {
+        return request.auth.uid in resource.data.memberUids
+          && changed().hasOnly(['members'])
+          && membersChanged().hasOnly([request.auth.uid])
+          && me().keys().hasOnly(['name', 'via'])
+          && me().via == resource.data.members[request.auth.uid].via
+          && me().name == myName();
+      }
+
+      allow read: if signedIn() && request.auth.uid in resource.data.memberUids;
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['name', 'ownerUid', 'invite', 'memberUids', 'members', 'createdAt'])
+        && validName(request.resource.data.name, 40)
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.memberUids == [request.auth.uid]
+        && request.resource.data.members.keys().hasOnly([request.auth.uid])
+        && me().name == myName()
+        && request.resource.data.createdAt == request.time
+        && getAfter(/databases/$(database)/documents/invites/$(request.resource.data.invite)).data.gid == gid;
+      allow update: if signedIn() && (ownerEdit() || selfJoin() || selfLeave() || selfRename());
+      allow delete: if signedIn() && resource.data.ownerUid == request.auth.uid;
+
+      // Canais (texto ou transmissão): todo membro vê, só o dono do grupo cria, renomeia e apaga.
+      match /channels/{cid} {
+        allow read: if isMemberOf(gid);
+        allow create, update: if signedIn()
+          && groupAfter(gid).ownerUid == request.auth.uid
+          && request.resource.data.keys().hasOnly(['name', 'type', 'pos'])
+          && validName(request.resource.data.name, 30)
+          && request.resource.data.type in ['text', 'stream']
+          && request.resource.data.pos is number
+          && (resource == null || request.resource.data.type == resource.data.type);
+        allow delete: if isOwnerOf(gid);
+
+        // Mensagens dos canais de texto: membro manda com o próprio nome; apaga a sua (o dono apaga qualquer uma).
+        match /messages/{mid} {
+          allow read: if isMemberOf(gid);
+          allow create: if isMemberOf(gid)
+            && get(/databases/$(database)/documents/groups/$(gid)/channels/$(cid)).data.type == 'text'
+            && request.resource.data.keys().hasOnly(['uid', 'name', 'text', 'at'])
+            && request.resource.data.uid == request.auth.uid
+            && request.resource.data.name == myName()
+            && validName(request.resource.data.text, 2000)
+            && request.resource.data.at == request.time;
+          allow delete: if signedIn() && (resource.data.uid == request.auth.uid || isOwnerOf(gid));
+        }
+      }
+
+      // Quem está em cada sala de transmissão (quem cuida da sala atualiza).
+      match /rooms/{cid} {
+        allow read: if isMemberOf(gid);
+        allow create, update: if isMemberOf(gid)
+          && request.resource.data.keys().hasOnly(['people', 'at', 'by'])
+          && request.resource.data.people is list
+          && request.resource.data.people.size() <= 30
+          && request.resource.data.at == request.time
+          && request.resource.data.by == request.auth.uid;
+        allow delete: if isOwnerOf(gid);
+      }
+    }
+  }
+}

@@ -20,10 +20,14 @@ contextBridge.exposeInMainWorld('tav', {
   hardware: () => ipcRenderer.invoke('tav:hardware'),
   presence: (state) => ipcRenderer.send('tav:presence', state),
   settingsGet: () => ipcRenderer.invoke('tav:settings-get'),
+  devFlags: () => ipcRenderer.invoke('tav:dev-flags'),
   settingsSet: (patch) => ipcRenderer.invoke('tav:settings-set', patch),
   checkUpdate: () => ipcRenderer.invoke('tav:check-update'),
   openReleases: () => ipcRenderer.send('tav:open-releases'),
   onSplash: (cb) => listen('tav:splash', cb),
   onUpdateReady: (cb) => listen('tav:update-ready', cb),
   restartToUpdate: () => ipcRenderer.send('tav:restart-update'),
+  // Fechando a janela: a página avisa "offline" e libera (ou o app fecha sozinho em 1,5 s).
+  onClosing: (cb) => listen('tav:closing', cb),
+  canClose: () => ipcRenderer.send('tav:can-close'),
 });

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://0.peerjs.com wss://0.peerjs.com; media-src 'self' blob: mediastream:">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://0.peerjs.com wss://0.peerjs.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://firestore.googleapis.com https://www.googleapis.com http://127.0.0.1:* ws://127.0.0.1:*; media-src 'self' blob: mediastream:">
 <title>ScreenPLAY</title>
 <script src="theme-boot.js"></script>
 <style>
@@ -38,8 +38,8 @@
     -webkit-font-smoothing: antialiased;
     user-select: none;
   }
-  input { user-select: text; }
-  button, input, select { font: inherit; color: inherit; }
+  input, textarea { user-select: text; }
+  button, input, select, textarea { font: inherit; color: inherit; }
   .hidden { display: none !important; }
 
   /* ---------- Botões e campos ---------- */
@@ -61,15 +61,15 @@
   .btn.sm { padding: 6px 10px; font-size: 13px; }
   .btn:disabled { opacity: .5; cursor: not-allowed; }
   button:focus-visible { outline: 2px solid var(--muted); outline-offset: 2px; }
-  input[type=text], select {
+  input[type=text], input[type=email], input[type=password], select {
     width: 100%; background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px;
     padding: 11px 12px; outline: none; transition: border-color .15s;
   }
-  input[type=text]:focus, select:focus { border-color: var(--muted); }
+  input[type=text]:focus, input[type=email]:focus, input[type=password]:focus, select:focus { border-color: var(--muted); }
   select:disabled, input:disabled { opacity: .55; }
 
   /* ---------- Tela inicial ---------- */
-  #home {
+  #auth {
     min-height: 100%; display: grid; place-items: center; padding: 24px 16px;
     background:
       radial-gradient(1000px 560px at 50% -12%, color-mix(in srgb, var(--text) 7%, transparent), transparent 60%),
@@ -85,7 +85,6 @@
   .brand b { font-weight: 800; color: var(--text); }
   .logo { width: 36px; height: 36px; flex: none; display: block; }
   .brand.small .logo { width: 28px; height: 28px; }
-  .app-ver { position: fixed; left: 0; right: 0; bottom: 10px; text-align: center; font-size: 11px; color: var(--faint); pointer-events: none; }
 
   .update-bar {
     position: fixed; top: 14px; left: 50%; transform: translateX(-50%); z-index: 60;
@@ -99,11 +98,6 @@
   .sub { color: var(--muted); margin: 8px 0 22px; }
   .field { display: block; margin-bottom: 14px; }
   .field > span { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
-  .or { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 13px; margin: 20px 0 14px; }
-  .or::before, .or::after { content: ""; flex: 1; height: 1px; background: var(--line); }
-  .join-row { display: flex; gap: 8px; }
-  #codeInput { text-transform: uppercase; letter-spacing: .25em; font-weight: 700; text-align: center; }
-  #codeInput::placeholder { letter-spacing: .1em; font-weight: 500; }
   .msg { min-height: 20px; margin: 14px 0 0; font-size: 14px; color: var(--muted); }
   .msg.err { color: var(--bad); }
   .foot {
@@ -113,16 +107,6 @@
   .foot svg { flex: none; margin-top: 1px; color: var(--text); }
 
   /* ---------- Sala ---------- */
-  #room { height: 100%; display: grid; grid-template-columns: 300px 1fr; }
-  .side {
-    background: var(--panel); border-right: 1px solid var(--line); padding: 16px;
-    display: flex; flex-direction: column; gap: 14px; overflow-y: auto; min-height: 0;
-    scrollbar-width: thin; scrollbar-color: var(--line-2) transparent;
-  }
-  .box { background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; }
-  .label { font-size: 11.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: 8px; font-weight: 600; }
-  .code-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-  .code { font-size: 26px; font-weight: 800; letter-spacing: .16em; font-variant-numeric: tabular-nums; user-select: text; }
   .status { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); margin-top: 10px; }
   .status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
   .status.ok::before { background: var(--good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 22%, transparent); }
@@ -130,7 +114,6 @@
   .status.warn::before { background: var(--warn); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 22%, transparent); }
 
   /* Ícone de sinal com o ping (passe o mouse para ver os números) */
-  .people-head { display: flex; align-items: center; justify-content: space-between; }
   .ping { position: relative; display: inline-flex; padding: 2px; color: var(--faint); cursor: default; }
   .ping rect { fill: currentColor; opacity: .28; transition: opacity .2s; }
   .ping rect.on { opacity: 1; }
@@ -147,7 +130,7 @@
   .ping:hover::after { opacity: 1; transform: none; }
   .check { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 12px; cursor: pointer; font-size: 14px; }
   .check input { margin: 3px 0 0; accent-color: var(--accent); width: 16px; height: 16px; flex: none; }
-  .check small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }  #qualitySel, #encoderSel { margin-bottom: 12px; padding: 9px 10px; }
+  .check small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
   .hint { font-size: 12.5px; color: var(--muted); margin: 10px 0 0; }
   .hint.on { color: var(--text); }
   .preview { margin-top: 12px; position: relative; border-radius: 8px; overflow: hidden; background: #000; aspect-ratio: 16 / 9; }
@@ -156,10 +139,6 @@
     position: absolute; left: 6px; top: 6px; font-size: 11px; font-weight: 700;
     background: rgba(0, 0, 0, .65); padding: 2px 7px; border-radius: 999px;
   }
-  .people-box { flex: 1 0 auto; min-height: 120px; }   /* cresce com a lista (não passa por cima do "Sair") */
-  .side > .btn.danger { flex: none; }
-  #people { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
-  #people li { display: flex; align-items: center; gap: 10px; padding: 6px 2px; }
   .av {
     width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center;
     font-weight: 700; font-size: 13px; color: #fff; flex: none;
@@ -353,6 +332,313 @@
   .about-name b { color: var(--text); font-weight: 800; }
   .about-ver { margin-top: 2px; font-size: 13px; color: var(--muted); }
 
+  /* ---------- Conta (entrar / criar conta) ---------- */
+  #auth .card { max-width: 400px; }
+  .auth-loading { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 34px 0 20px; color: var(--muted); }
+  .auth-form h2 { margin: 20px 0 2px; font-size: 20px; }
+  .auth-form .sub { margin: 0 0 18px; }
+  .field > span small { color: var(--faint); font-size: 12px; }
+  .auth-links { display: flex; justify-content: center; align-items: center; gap: 8px; margin-top: 14px; font-size: 13.5px; color: var(--faint); }
+  .link { padding: 0; border: 0; background: none; color: var(--muted); font-weight: 600; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+  .link:hover { color: var(--text); }
+  .msg.ok { color: var(--good); }
+
+  /* ---------- App: grupos (estilo Discord) ---------- */
+  #app { height: 100%; display: grid; grid-template-columns: 72px 240px minmax(0, 1fr); }
+
+  /* Barra dos grupos (esquerda) */
+  .rail {
+    display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 12px 0; min-height: 0;
+    background: color-mix(in srgb, var(--bg) 80%, #000); border-right: 1px solid var(--line);
+    overflow-y: auto; scrollbar-width: none;
+  }
+  .rail-list { display: contents; }
+  .rail-item { position: relative; width: 48px; height: 48px; flex: none; }
+  .rail-item::before {
+    content: ""; position: absolute; left: -12px; top: 50%; width: 4px; height: 0; border-radius: 0 4px 4px 0;
+    background: var(--text); transform: translateY(-50%); transition: height .15s;
+  }
+  .rail-item:hover::before { height: 20px; }
+  .rail-item.active::before { height: 40px; }
+  .rail-btn {
+    width: 48px; height: 48px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%;
+    background: var(--panel-2); color: var(--text); font-weight: 700; font-size: 15px; cursor: pointer;
+    transition: border-radius .15s, background .15s, color .15s;
+  }
+  .rail-btn:hover, .rail-item.active .rail-btn { border-radius: 16px; background: var(--accent); color: var(--on-accent); }
+  .rail-btn.home .logo { width: 30px; height: 30px; }
+  .rail-btn.home:hover, .rail-item.active .rail-btn.home { background: var(--panel-3); }
+  .rail-btn.act { color: var(--muted); }
+  .here-dot {
+    position: absolute; right: -3px; bottom: -3px; width: 18px; height: 18px; border-radius: 50%;
+    display: grid; place-items: center; background: var(--good); color: #fff;
+    border: 3px solid color-mix(in srgb, var(--bg) 80%, #000); pointer-events: none;
+  }
+  .rail-sep { width: 32px; height: 2px; flex: none; border-radius: 1px; background: var(--line-2); }
+  .tip {
+    position: fixed; z-index: 70; padding: 7px 11px; border-radius: 8px; background: var(--panel-3);
+    border: 1px solid var(--line-2); color: var(--text); font-size: 14px; font-weight: 600; white-space: nowrap;
+    pointer-events: none; box-shadow: 0 10px 24px rgba(0, 0, 0, .45);
+  }
+
+  /* Coluna dos canais */
+  .chan-col { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--panel); border-right: 1px solid var(--line); }
+  .group-head {
+    height: 52px; flex: none; display: flex; align-items: center; gap: 8px; width: 100%; padding: 0 12px 0 16px;
+    border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--text);
+    font-weight: 700; font-size: 15px; text-align: left; cursor: pointer; transition: background .15s;
+  }
+  .group-head:hover:not(:disabled), .group-head.open { background: var(--panel-2); }
+  .group-head:disabled { cursor: default; opacity: 1; }
+  .group-head:disabled svg { display: none; }
+  .gname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .group-head svg { flex: none; color: var(--muted); transition: transform .15s; }
+  .group-head.open svg { transform: rotate(180deg); }
+  .chan-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 8px 16px; scrollbar-width: thin; scrollbar-color: var(--line-2) transparent; }
+  .chan-sec {
+    display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 18px 2px 6px 8px;
+    font-size: 11.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted);
+  }
+  .mini {
+    width: 22px; height: 22px; display: grid; place-items: center; flex: none; padding: 0; border: 0;
+    border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer;
+  }
+  .mini:hover { background: var(--panel-3); color: var(--text); }
+  .mini.lg { width: 34px; height: 34px; border-radius: 8px; }
+  .chan {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 2px; padding: 6px 6px 6px 8px; border-radius: 6px;
+    color: var(--muted); font-weight: 500; cursor: pointer; outline: none;
+  }
+  .chan:hover, .chan:focus-visible { background: var(--panel-2); color: var(--text); }
+  .chan.active { background: var(--panel-3); color: var(--text); }
+  .chan.here { color: var(--text); }
+  .cico { flex: none; display: grid; color: var(--faint); }
+  .chan.active .cico, .chan.here .cico { color: var(--text); }
+  .cname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chan .mini { opacity: 0; }
+  .chan:hover .mini, .chan.active .mini { opacity: 1; }
+  .chan-people { list-style: none; margin: 0 0 6px; padding: 0 0 0 26px; }
+  .chan-people li { display: flex; align-items: center; gap: 8px; padding: 3px 6px; font-size: 13.5px; color: var(--muted); }
+  .chan-people .av { width: 22px; height: 22px; font-size: 10.5px; }
+  .chan-note { padding: 4px 8px; font-size: 13px; color: var(--faint); }
+
+  .voice-panel { flex: none; padding: 10px; border-top: 1px solid var(--line); }
+  .voice-top { display: flex; align-items: center; gap: 8px; }
+  .voice-info { flex: 1; min-width: 0; }
+  .voice-info .status { margin: 0; font-weight: 700; color: var(--text); }
+  .voice-info small { display: block; margin-top: 2px; padding-left: 16px; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .voice-hint { color: var(--live) !important; }
+  .voice-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 8px; }
+  .user-panel {
+    flex: none; display: flex; align-items: center; gap: 10px; padding: 8px 8px 8px 10px;
+    border-top: 1px solid var(--line); background: color-mix(in srgb, var(--panel) 55%, var(--bg));
+  }
+  .user-panel .av { width: 34px; height: 34px; }
+  .me-text { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+  .me-text small { font-size: 12px; color: var(--muted); }
+  .me-text b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* Área principal */
+  .main { position: relative; display: flex; min-width: 0; min-height: 0; background: var(--bg); }
+  .views { position: relative; flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .view.center {
+    display: grid; place-items: center; padding: 24px 16px; overflow-y: auto;
+    background:
+      radial-gradient(1000px 560px at 50% -12%, color-mix(in srgb, var(--text) 7%, transparent), transparent 60%),
+      var(--bg);
+  }
+  .welcome { max-width: 440px; }
+  .welcome h2 { margin: 22px 0 4px; font-size: 21px; }
+  .welcome .btn + .btn { margin-top: 10px; }
+  .app-ver { margin-top: 14px; text-align: center; font-size: 11px; color: var(--faint); }
+  .view-head {
+    height: 52px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 16px;
+    border-bottom: 1px solid var(--line);
+  }
+  .view-head b { font-size: 15.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .view-head small { min-width: 0; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .view-head .grow { flex: 1; }
+  .view-head .status { margin: 0; flex: none; }
+
+  /* Conversa (canal de texto) */
+  .msg-list { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 0 18px; user-select: text; scrollbar-width: thin; scrollbar-color: var(--line-2) transparent; }
+  .chat-intro { padding: 28px 16px 6px; }
+  .chat-intro .big-ico { width: 64px; height: 64px; display: grid; place-items: center; margin-bottom: 12px; border-radius: 50%; background: var(--panel-2); color: var(--text); }
+  .chat-intro h3 { margin: 0 0 4px; font-size: 24px; }
+  .chat-intro p { margin: 0; color: var(--muted); }
+  .chat-note { padding: 18px 16px; text-align: center; font-size: 13px; color: var(--faint); }
+  .day-sep { display: flex; align-items: center; gap: 10px; margin: 18px 16px 4px; font-size: 12px; font-weight: 600; color: var(--faint); }
+  .day-sep::before, .day-sep::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+  .cm { position: relative; min-height: 22px; padding: 2px 56px 2px 72px; }
+  .cm:hover { background: color-mix(in srgb, var(--text) 3.5%, transparent); }
+  .cm.first { min-height: 50px; margin-top: 12px; padding-top: 4px; }
+  .cm .av { position: absolute; left: 16px; top: 6px; width: 40px; height: 40px; font-size: 16px; }
+  .mhead { display: flex; align-items: baseline; gap: 8px; }
+  .mhead b { font-weight: 600; }
+  .mhead time { font-size: 12px; color: var(--faint); }
+  .mside { position: absolute; left: 0; top: 5px; width: 72px; text-align: center; font-size: 11px; color: var(--faint); opacity: 0; }
+  .cm:hover .mside { opacity: 1; }
+  .mtext { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; }
+  .cm.pending .mtext { color: var(--muted); }
+  .mdel {
+    position: absolute; right: 14px; top: -10px; width: 30px; height: 28px; display: grid; place-items: center; padding: 0;
+    border: 1px solid var(--line-2); border-radius: 8px; background: var(--panel-2); color: var(--muted); cursor: pointer; opacity: 0;
+  }
+  .cm:hover .mdel { opacity: 1; }
+  .mdel:hover { background: var(--panel-3); color: var(--text); }
+  .composer { flex: none; padding: 0 16px 18px; }
+  .composer-box { display: flex; padding: 0 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); transition: border-color .15s; }
+  .composer-box:focus-within { border-color: var(--line-2); }
+  .composer textarea {
+    flex: 1; min-height: 44px; max-height: 220px; padding: 11px 0; border: 0; outline: none; resize: none;
+    background: transparent; line-height: 1.45; overflow-y: auto;
+  }
+  .composer textarea::placeholder { color: var(--faint); }
+
+  /* Sala de transmissão */
+  .room-body { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .room-body .stage { flex: 1; }
+  .preview.pip {
+    position: absolute; right: 16px; bottom: 16px; z-index: 7; width: 220px; margin: 0;
+    border: 1px solid var(--line-2); box-shadow: 0 12px 30px rgba(0, 0, 0, .5);
+  }
+
+  /* Menu (grupo / canal) */
+  .menu {
+    position: fixed; z-index: 45; min-width: 210px; padding: 6px; border: 1px solid var(--line-2); border-radius: 10px;
+    background: var(--panel-3); box-shadow: 0 16px 40px rgba(0, 0, 0, .5);
+  }
+  .menu button {
+    display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border: 0; border-radius: 6px;
+    background: transparent; color: var(--text); font-size: 14px; font-weight: 500; text-align: left; cursor: pointer;
+  }
+  .menu button svg { flex: none; color: var(--muted); }
+  .menu button:hover { background: var(--accent); color: var(--on-accent); }
+  .menu button:hover svg { color: var(--on-accent); }
+  .menu button.danger:hover { background: var(--bad); color: #fff; }
+  .menu button.danger:hover svg { color: #fff; }
+  .menu hr { height: 1px; margin: 5px 6px; border: 0; background: var(--line-2); }
+
+  /* Caixinhas de pergunta (criar grupo, convite, apagar…) */
+  .dlg-sheet { display: block; width: min(460px, 100%); padding: 22px 22px 18px; }
+  .dlg-sheet h2 { margin: 0 0 6px; font-size: 19px; }
+  .dlg-sheet .set-lead { margin: 0 0 16px; }
+  .dlg-sheet .field { margin-bottom: 4px; }
+  .dlg-sheet .msg { min-height: 0; margin: 8px 0 0; }
+  .dlg-foot { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+  .code-input { text-transform: uppercase; letter-spacing: .2em; font-weight: 700; text-align: center; }
+  .code-input::placeholder { letter-spacing: .08em; font-weight: 500; text-transform: none; }
+  .invite-box { display: flex; gap: 8px; }
+  .invite-code {
+    flex: 1; display: grid; place-items: center; padding: 10px; border: 1px solid var(--line); border-radius: 10px;
+    background: var(--panel-2); font-size: 22px; font-weight: 800; letter-spacing: .2em; font-variant-numeric: tabular-nums; user-select: text;
+  }
+
+  /* ---------- Membros do grupo (direita) ---------- */
+  .members { width: 240px; flex: none; display: flex; flex-direction: column; min-height: 0; background: var(--panel); border-left: 1px solid var(--line); }
+  .members-head {
+    height: 52px; flex: none; display: flex; align-items: center; padding: 0 16px; border-bottom: 1px solid var(--line);
+    font-size: 11.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted);
+  }
+  .members-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 8px 16px; scrollbar-width: thin; scrollbar-color: var(--line-2) transparent; }
+  .mem-sec { padding: 18px 8px 6px; font-size: 11.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+  .mem { display: flex; align-items: center; gap: 10px; margin-bottom: 2px; padding: 6px 8px; border-radius: 6px; }
+  .mem:hover { background: var(--panel-2); }
+  .mem.off { opacity: .45; }
+  .mem.off:hover { opacity: .8; }
+  .mem .av { width: 32px; height: 32px; font-size: 13px; }
+  .mem-text { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .mem-line { display: flex; align-items: center; gap: 4px; min-width: 0; }
+  .mem-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+  .crown { flex: none; display: grid; color: var(--warn); }
+  .mem-status { display: flex; align-items: center; gap: 4px; min-width: 0; font-size: 12px; color: var(--muted); }
+  .mem-status span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mem-status svg { flex: none; }
+  .mem-status.live { color: var(--live); }
+  .av-wrap { position: relative; flex: none; display: inline-grid; }
+  .dot { position: absolute; right: -2px; bottom: -2px; width: 14px; height: 14px; border-radius: 50%; border: 3px solid var(--panel); background: var(--faint); }
+  .dot.on { background: var(--good); }
+  .user-panel .dot { border-color: color-mix(in srgb, var(--panel) 55%, var(--bg)); }
+  .members-toggle.on { background: var(--panel-2); color: var(--text); }
+
+  /* ---------- Perfil (foto e efeito no nome) ---------- */
+  .profile-card { margin: 14px 0 6px; overflow: hidden; border: 1px solid var(--line); border-radius: 14px; background: var(--panel-2); }
+  .pc-banner { height: 64px; background: linear-gradient(120deg, color-mix(in srgb, var(--text) 16%, var(--panel-3)), var(--panel-3) 70%); }
+  .pc-body { display: flex; align-items: flex-end; gap: 14px; margin-top: -36px; padding: 0 18px 16px; }
+  .pc-av {
+    width: 88px; height: 88px; padding: 0; border: 5px solid var(--panel-2); font-size: 34px; cursor: pointer;
+    transition: filter .15s;
+  }
+  .pc-av:hover { filter: brightness(.8); }
+  .pc-name { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding-bottom: 8px; }
+  .pc-name b { font-size: 20px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pc-name small { font-size: 12.5px; color: var(--muted); }
+  .row-actions { display: flex; gap: 8px; flex: none; }
+  .fx-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-bottom: 6px; }
+  .fx-opt {
+    display: flex; flex-direction: column; align-items: flex-start; gap: 8px; min-width: 0; padding: 14px 12px 10px;
+    border: 2px solid var(--line); border-radius: 10px; background: var(--panel-2); text-align: left; cursor: pointer;
+  }
+  .fx-opt:hover { border-color: var(--line-2); }
+  .fx-opt.sel { border-color: var(--accent); }
+  .fx-sample { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 16px; font-weight: 700; }
+  .fx-opt small { font-size: 12px; font-weight: 600; color: var(--muted); }
+  .user-panel .av, .user-panel .me-text { cursor: pointer; }
+
+  /* Configurações do grupo */
+  .gs-photo { display: flex; align-items: center; gap: 16px; margin-bottom: 16px; }
+  .gs-pic {
+    width: 76px; height: 76px; flex: none; display: grid; place-items: center; padding: 0; border: 0; border-radius: 24px;
+    background: var(--panel-3) center / cover no-repeat; color: var(--text); font-size: 26px; font-weight: 800; cursor: pointer;
+    transition: filter .15s;
+  }
+  .gs-pic:hover { filter: brightness(.8); }
+  .gs-side { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .gs-side small { font-size: 12.5px; color: var(--muted); }
+
+  /* Efeitos animados no nome. O espaço extra (padding) é pra o brilho não ficar cortado. */
+  .fx { padding: 6px 8px; margin: -6px -8px; }
+  .fx-fire { color: #ffc46b; animation: fx-fire 1.2s ease-in-out infinite alternate; }
+  @keyframes fx-fire {
+    0%   { text-shadow: 0 0 2px #fff4, 0 -1px 4px #ff9500, 0 -3px 7px #ff5e00, 0 -5px 11px #e01e00; }
+    25%  { text-shadow: 0 0 2px #fff4, 1px -2px 5px #ffaa00, -1px -4px 8px #ff6a00, 1px -6px 12px #d81b00; }
+    50%  { text-shadow: 0 0 2px #fff4, -1px -1px 4px #ff9500, 1px -3px 9px #ff4d00, -1px -7px 13px #c81400; }
+    75%  { text-shadow: 0 0 2px #fff4, 1px -2px 5px #ffb000, 0 -5px 8px #ff6a00, 0 -6px 12px #e01e00; }
+    100% { text-shadow: 0 0 2px #fff4, 0 -1px 4px #ffa000, -1px -4px 8px #ff5400, 1px -8px 14px #b01000; }
+  }
+  .fx-bolt { color: #fff3a0; animation: fx-bolt 2.6s linear infinite; }
+  @keyframes fx-bolt {
+    0%, 7%, 13%, 45%, 51%, 100% { color: #fff3a0; text-shadow: 0 0 3px #ffe600, 0 0 8px #ffbf0080; transform: none; }
+    9%  { color: #fff; text-shadow: 0 0 4px #fff, 0 0 12px #ffe600, 0 0 22px #ffd000, 0 0 34px #fff59a; transform: translateX(1px); }
+    11% { color: #fffbd6; text-shadow: 0 0 2px #fff, 0 0 6px #ffe600; transform: translateX(-1px); }
+    12% { color: #fff; text-shadow: 0 0 5px #fff, 0 0 16px #ffe600, 0 0 30px #ffcc00; transform: none; }
+    48% { color: #fff; text-shadow: 0 0 4px #fff, 0 0 14px #ffe600, 0 0 26px #ffcc00; transform: translateY(-1px); }
+  }
+  .fx-water, .fx-ice, .fx-rainbow { -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .fx-water {
+    background-image: linear-gradient(90deg, #38bdf8, #a5f3fc, #2563eb, #22d3ee, #38bdf8);
+    background-size: 300% 100%; filter: drop-shadow(0 0 4px #38bdf866);
+    animation: fx-flow 3.6s linear infinite;
+  }
+  .fx-ice {
+    background-image: linear-gradient(110deg, #7dd3fc 0%, #bae6fd 34%, #ffffff 48%, #bae6fd 62%, #67c7f0 100%);
+    background-size: 250% 100%; filter: drop-shadow(0 0 3px #7dd3fc88);
+    animation: fx-shine 2.8s ease-in-out infinite;
+  }
+  .fx-neon { color: #ffd6fb; animation: fx-neon 1.8s ease-in-out infinite alternate; }
+  @keyframes fx-neon {
+    from { text-shadow: 0 0 2px #fff, 0 0 6px #ff3df2, 0 0 12px #c026d3, 0 0 20px #a21caf; }
+    to   { text-shadow: 0 0 1px #fff, 0 0 3px #ff3df2, 0 0 7px #c026d3, 0 0 10px #a21caf80; }
+  }
+  .fx-rainbow {
+    background-image: linear-gradient(90deg, #ff4d4d, #ffb84d, #f9f871, #4dff88, #4dc3ff, #a64dff, #ff4dd2, #ff4d4d);
+    background-size: 300% 100%; animation: fx-flow 4s linear infinite;
+  }
+  @keyframes fx-flow { to { background-position: 300% 0; } }
+  @keyframes fx-shine { from { background-position: 100% 0; } to { background-position: 0% 0; } }
+  @media (prefers-reduced-motion: reduce) { .fx { animation: none !important; } }
+
   #toasts { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 50; max-width: min(380px, calc(100vw - 32px)); }
   .toast {
     background: var(--panel-3); border: 1px solid var(--line-2); border-left: 3px solid var(--text);
@@ -366,106 +652,182 @@
 </head>
 <body>
 
-<!-- =================== TELA INICIAL =================== -->
-<div id="home">
+<!-- =================== CONTA: ENTRAR / CRIAR CONTA =================== -->
+<div id="auth">
   <div class="card">
     <div class="brand-row">
       <div class="brand">
         <img class="logo" src="assets/icon.png" alt="">
         <span>Screen<b>PLAY</b></span>
       </div>
-      <button class="gear-btn" type="button" data-settings title="Configurações" aria-label="Configurações"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg></button>
     </div>
-    <p class="sub">Crie uma sala, mande o código pros amigos e transmitam a tela — com ou sem o som do PC.</p>
 
-    <label class="field"><span>Seu nome</span>
-      <input type="text" id="nameInput" maxlength="24" placeholder="Como seus amigos te veem" autocomplete="off">
-    </label>
-    <button id="createBtn" class="btn primary big" type="button">Criar sala</button>
+    <div id="authLoading" class="auth-loading"><div class="spin"></div><span>Conectando…</span></div>
 
-    <div class="or">ou entre numa sala</div>
-    <div class="join-row">
-      <input type="text" id="codeInput" maxlength="6" placeholder="CÓDIGO" autocomplete="off" spellcheck="false" aria-label="Código da sala">
-      <button id="joinBtn" class="btn" type="button">Entrar</button>
-    </div>
-    <p id="homeMsg" class="msg" role="status"></p>
+    <form id="loginForm" class="auth-form hidden" novalidate>
+      <h2>Entrar</h2>
+      <p class="sub">Entre na sua conta do ScreenPLAY.</p>
+      <label class="field"><span>E-mail</span><input type="email" id="loginEmail" autocomplete="email" spellcheck="false"></label>
+      <label class="field"><span>Senha</span><input type="password" id="loginPass" autocomplete="current-password"></label>
+      <button class="btn primary big" type="submit">Entrar</button>
+      <div class="auth-links">
+        <button type="button" class="link" id="forgotBtn">Esqueci minha senha</button>
+        <span>·</span>
+        <button type="button" class="link" id="toSignup">Criar conta</button>
+      </div>
+    </form>
 
-    <div class="foot">
-      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-      <span>O microfone e a câmera nunca são usados. A transmissão vai direto de um PC pro outro.</span>
-    </div>
+    <form id="signupForm" class="auth-form hidden" novalidate>
+      <h2>Criar conta</h2>
+      <p class="sub">É rapidinho, e só uma vez.</p>
+      <label class="field"><span>Usuário <small>· 3 a 20 caracteres, é como te veem nas salas</small></span>
+        <input type="text" id="signupNick" maxlength="20" autocomplete="username" spellcheck="false"></label>
+      <label class="field"><span>E-mail</span><input type="email" id="signupEmail" autocomplete="email" spellcheck="false"></label>
+      <label class="field"><span>Senha <small>· mínimo 6 caracteres</small></span><input type="password" id="signupPass" autocomplete="new-password"></label>
+      <label class="field"><span>Confirmar senha</span><input type="password" id="signupPass2" autocomplete="new-password"></label>
+      <button class="btn primary big" type="submit">Criar conta</button>
+      <div class="auth-links"><button type="button" class="link" id="toLogin">Já tenho conta</button></div>
+    </form>
+
+    <form id="nickForm" class="auth-form hidden" novalidate>
+      <h2>Escolha seu usuário</h2>
+      <p class="sub">É como seus amigos te veem nas salas. Ninguém mais pode usar o mesmo.</p>
+      <label class="field"><span>Usuário</span><input type="text" id="nickOnly" maxlength="20" spellcheck="false"></label>
+      <button class="btn primary big" type="submit">Continuar</button>
+      <div class="auth-links"><button type="button" class="link" id="nickLogout">Sair da conta</button></div>
+    </form>
+
+    <p id="authMsg" class="msg" role="status"></p>
   </div>
-  <div id="appVersion" class="app-ver"></div>
 </div>
 
-<!-- =================== SALA =================== -->
-<div id="room" class="hidden">
-  <aside class="side">
-    <div class="brand-row">
-      <div class="brand small">
-        <img class="logo" src="assets/icon.png" alt="">
-        <span>Screen<b>PLAY</b></span>
+<!-- =================== APP: GRUPOS (estilo Discord) =================== -->
+<div id="app" class="hidden">
+  <nav id="rail" class="rail" aria-label="Seus grupos">
+    <div id="homeItem" class="rail-item">
+      <button id="homeBtn" class="rail-btn home" type="button" data-tip="Início" aria-label="Início"><img class="logo" src="assets/icon.png" alt=""></button>
+    </div>
+    <div class="rail-sep"></div>
+    <div id="groupList" class="rail-list"></div>
+    <div class="rail-item">
+      <button id="addGroupBtn" class="rail-btn act" type="button" data-tip="Criar um grupo" aria-label="Criar um grupo"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+    </div>
+    <div class="rail-item">
+      <button id="joinGroupBtn" class="rail-btn act" type="button" data-tip="Entrar com convite" aria-label="Entrar num grupo com convite"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><path d="m10 17 5-5-5-5"/><path d="M15 12H3"/></svg></button>
+    </div>
+  </nav>
+
+  <aside class="chan-col">
+    <button id="groupHead" class="group-head" type="button">
+      <span id="groupName" class="gname">ScreenPLAY</span>
+      <svg id="groupChevron" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+    </button>
+    <div id="chanList" class="chan-scroll"></div>
+
+    <div id="voicePanel" class="voice-panel hidden">
+      <div class="voice-top">
+        <div class="voice-info">
+          <div id="voiceStatus" class="status">Conectando…</div>
+          <small id="voiceWhere"></small>
+          <small id="shareHint" class="voice-hint hidden"></small>
+        </div>
+        <button id="voiceLeave" class="mini lg" type="button" title="Sair da sala" aria-label="Sair da sala"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></svg></button>
       </div>
+      <div class="voice-actions">
+        <button id="voiceOpen" class="btn sm" type="button">Ver sala</button>
+        <button id="voiceShare" class="btn sm" type="button">Transmitir</button>
+      </div>
+    </div>
+
+    <div class="user-panel">
+      <span class="av-wrap"><span id="meAv" class="av"></span><span class="dot on" title="Online"></span></span>
+      <span class="me-text"><b id="meName"></b><small>Online</small></span>
       <button class="gear-btn" type="button" data-settings title="Configurações" aria-label="Configurações"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg></button>
     </div>
-
-    <section class="box">
-      <div class="label">Código da sala</div>
-      <div class="code-row">
-        <span id="roomCode" class="code"></span>
-        <button id="copyCodeBtn" class="btn sm" type="button">Copiar</button>
-      </div>
-      <div id="netStatus" class="status">Conectando…</div>
-    </section>
-
-    <section class="box">
-      <div class="label">Transmitir</div>
-      <label class="check">
-        <input type="checkbox" id="audioChk" checked>
-        <span>Com som do PC
-          <small id="audioNote">Tela inteira: o som do PC, sem o Discord. Uma janela: só o som daquele app. O microfone nunca vai junto.</small>
-        </span>
-      </label>
-      <select id="qualitySel" aria-label="Qualidade">
-        <option value="720-30">720p · 30 fps (internet fraca)</option>
-        <option value="1080-30" selected>1080p · 30 fps</option>
-        <option value="1080-60">1080p · 60 fps (jogos e vídeos)</option>
-      </select>
-      <select id="encoderSel" aria-label="Codificador de vídeo">
-        <option value="gpu" selected>H.264 · Placa de vídeo</option>
-        <option value="cpu">VP8 · Processador</option>
-      </select>
-      <button id="shareBtn" class="btn primary wide" type="button">Transmitir minha tela</button>
-      <p id="shareHint" class="hint"></p>
-      <div id="selfBox" class="preview hidden">
-        <video id="selfPreview" muted playsinline autoplay></video>
-        <span>Sua prévia</span>
-      </div>
-    </section>
-
-    <section class="box people-box">
-      <div class="label people-head">
-        <span>Na sala (<span id="count">0</span>)</span>
-        <span id="pingBadge" class="ping" data-tip="Medindo ping…" aria-label="Ping">
-          <svg viewBox="0 0 20 16" width="18" height="14" aria-hidden="true"><rect x="1" y="11" width="3" height="4" rx="1"/><rect x="6" y="8" width="3" height="7" rx="1"/><rect x="11" y="5" width="3" height="10" rx="1"/><rect x="16" y="2" width="3" height="13" rx="1"/></svg>
-        </span>
-      </div>
-      <ul id="people"></ul>
-    </section>
-
-    <button id="leaveBtn" class="btn danger wide" type="button">Sair da sala</button>
   </aside>
 
-  <main class="stage">
-    <div id="empty" class="empty">
-      <div>
-        <svg viewBox="0 0 24 24" width="56" height="56" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
-        <strong id="emptyTitle">Ninguém está transmitindo agora</strong>
-        <span id="emptyText">Quando alguém da sala transmitir, a tela aparece aqui.</span>
+  <main class="main">
+    <div class="views">
+    <!-- Início: nenhum grupo aberto -->
+    <section id="welcomeView" class="view center">
+      <div class="card welcome">
+        <div class="brand">
+          <img class="logo" src="assets/icon.png" alt="">
+          <span>Screen<b>PLAY</b></span>
+        </div>
+        <h2 id="welcomeTitle">Crie seu primeiro grupo</h2>
+        <p id="welcomeText" class="sub">Um grupo é o cantinho seu e dos seus amigos: canais de texto pra conversar e salas pra transmitir a tela.</p>
+        <button id="welcomeCreate" class="btn primary big" type="button">Criar um grupo</button>
+        <button id="welcomeJoin" class="btn big" type="button">Entrar com convite</button>
+        <div class="foot">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          <span>O microfone e a câmera nunca são usados. A transmissão vai direto de um PC pro outro.</span>
+        </div>
+        <div id="appVersion" class="app-ver"></div>
       </div>
+    </section>
+
+    <!-- Grupo sem canal de texto (ou carregando) -->
+    <section id="noChanView" class="view hidden">
+      <div class="empty">
+        <div>
+          <svg viewBox="0 0 24 24" width="56" height="56" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18"/></svg>
+          <strong id="noChanTitle"></strong>
+          <span id="noChanText"></span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Canal de texto -->
+    <section id="chatView" class="view hidden">
+      <header class="view-head">
+        <span class="cico"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18"/></svg></span>
+        <b id="chatTitle"></b>
+        <span class="grow"></span>
+        <button class="mini lg members-toggle" type="button" title="Membros do grupo" aria-label="Mostrar ou esconder os membros do grupo"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg></button>
+      </header>
+      <div id="msgList" class="msg-list"></div>
+      <form id="composer" class="composer">
+        <div class="composer-box"><textarea id="msgInput" rows="1" maxlength="2000" aria-label="Mensagem"></textarea></div>
+      </form>
+    </section>
+
+    <!-- Sala de transmissão -->
+    <section id="roomView" class="view hidden">
+      <header class="view-head">
+        <span class="cico"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg></span>
+        <b id="roomTitle"></b>
+        <small id="roomSub"></small>
+        <span class="grow"></span>
+        <span id="pingBadge" class="ping" data-tip="Medindo ping…" aria-label="Ping"><svg viewBox="0 0 20 16" width="18" height="14" aria-hidden="true"><rect x="1" y="11" width="3" height="4" rx="1"/><rect x="6" y="8" width="3" height="7" rx="1"/><rect x="11" y="5" width="3" height="10" rx="1"/><rect x="16" y="2" width="3" height="13" rx="1"/></svg></span>
+        <div id="netStatus" class="status">Conectando…</div>
+        <button class="mini lg members-toggle" type="button" title="Membros do grupo" aria-label="Mostrar ou esconder os membros do grupo"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg></button>
+      </header>
+      <div class="room-body">
+        <div class="stage">
+          <div id="empty" class="empty">
+            <div>
+              <svg viewBox="0 0 24 24" width="56" height="56" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+              <strong id="emptyTitle">Ninguém está transmitindo agora</strong>
+              <span id="emptyText">Quando alguém da sala transmitir, a tela aparece aqui.</span>
+            </div>
+          </div>
+          <div id="grid" class="grid"></div>
+          <div id="reactLayer" class="react-layer"></div>
+        </div>
+        <div id="selfBox" class="preview pip hidden">
+          <video id="selfPreview" muted playsinline autoplay></video>
+          <span>Sua prévia</span>
+        </div>
+      </div>
+    </section>
     </div>
-    <div id="grid" class="grid"></div>
-    <div id="reactLayer" class="react-layer"></div>
+
+    <!-- Membros do grupo (igual à lista da direita do Discord) -->
+    <aside id="members" class="members hidden" aria-label="Membros do grupo">
+      <div class="members-head">Membros do grupo</div>
+      <div id="memberList" class="members-scroll"></div>
+    </aside>
   </main>
 </div>
 
@@ -494,7 +856,8 @@
   <div class="sheet set-sheet">
     <nav class="set-nav">
       <div id="setTitle" class="set-title">Configurações</div>
-      <button class="set-tab active" data-tab="geral" type="button"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3M14 2v4M8 10v4M16 18v4"/></svg><span>Geral</span></button>
+      <button class="set-tab active" data-tab="perfil" type="button"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg><span>Perfil</span></button>
+      <button class="set-tab" data-tab="geral" type="button"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3M14 2v4M8 10v4M16 18v4"/></svg><span>Geral</span></button>
       <button class="set-tab" data-tab="transmissao" type="button"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg><span>Transmissão</span></button>
       <button class="set-tab" data-tab="sons" type="button"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M19 5a10 10 0 0 1 0 14"/></svg><span>Sons</span></button>
       <button class="set-tab" data-tab="aparencia" type="button"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="13.5" cy="6.5" r="1.2"/><circle cx="17.5" cy="10.5" r="1.2"/><circle cx="8.5" cy="7.5" r="1.2"/><circle cx="6.5" cy="12.5" r="1.2"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.93 0 1.65-.75 1.65-1.69 0-.44-.18-.84-.44-1.13-.29-.29-.44-.65-.44-1.13a1.64 1.64 0 0 1 1.67-1.67h2c3.05 0 5.55-2.5 5.55-5.55C21.97 6.01 17.46 2 12 2z"/></svg><span>Personalizar</span></button>
@@ -503,12 +866,38 @@
     <div class="set-body">
       <button id="setClose" class="ib set-close" type="button" title="Fechar (Esc)"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
 
-      <section class="set-page" data-page="geral">
-        <h2>Geral</h2>
+      <section class="set-page" data-page="perfil">
+        <h2>Perfil</h2>
+        <p class="set-lead">É assim que seus amigos te veem no chat, nas salas e nos grupos.</p>
+        <div class="profile-card">
+          <div class="pc-banner"></div>
+          <div class="pc-body">
+            <button id="pfAv" class="av pc-av" type="button" title="Trocar foto de perfil" aria-label="Trocar foto de perfil"></button>
+            <div class="pc-name"><b id="pfName"></b><small id="pfEmail"></small></div>
+          </div>
+        </div>
+        <div class="set-row">
+          <span class="set-text"><b>Foto de perfil</b><small>Uma imagem do seu PC (PNG, JPG, WEBP ou GIF). Ela é cortada em quadrado e reduzida.</small></span>
+          <div class="row-actions">
+            <button id="pfPhoto" class="btn" type="button">Trocar foto</button>
+            <button id="pfRemove" class="btn danger" type="button">Remover</button>
+          </div>
+        </div>
         <label class="set-row">
-          <span class="set-text"><b>Seu nome</b><small>Como seus amigos te veem nas salas.</small></span>
+          <span class="set-text"><b>Nome de usuário</b><small>Como seus amigos te veem. Ninguém mais pode usar o mesmo.</small></span>
           <input type="text" id="setName" maxlength="24" autocomplete="off" spellcheck="false">
         </label>
+        <div class="set-sub">Efeito no nome</div>
+        <p class="set-lead">Aparece animado no seu nome para todo mundo: no chat, nas salas e na lista de quem está transmitindo.</p>
+        <div id="fxGrid" class="fx-grid"></div>
+        <div class="set-row">
+          <span class="set-text"><b>Conta</b><small id="setEmail"></small></span>
+          <button id="setLogout" class="btn danger" type="button">Sair da conta</button>
+        </div>
+      </section>
+
+      <section class="set-page hidden" data-page="geral">
+        <h2>Geral</h2>
         <div class="set-row">
           <span class="set-text"><b>Iniciar junto com o Windows</b><small id="autoStartNote">O ScreenPLAY abre sozinho quando você liga o PC.</small></span>
           <label class="switch"><input type="checkbox" id="setAutoStart" aria-label="Iniciar junto com o Windows"></label>
@@ -521,17 +910,24 @@
 
       <section class="set-page hidden" data-page="transmissao">
         <h2>Transmissão</h2>
-        <p class="set-lead">O que já vem escolhido quando você clica em “Transmitir minha tela”.</p>
+        <p class="set-lead">Vale quando você clica em “Transmitir” no painel da sala (embaixo, à esquerda).</p>
         <div class="set-row">
           <span class="set-text"><b>Qualidade</b><small>Com upload fraco, prefira 1080p · 30 fps ou 720p.</small></span>
-          <select id="setQuality" aria-label="Qualidade padrão"></select>
+          <select id="setQuality" aria-label="Qualidade">
+            <option value="720-30">720p · 30 fps (internet fraca)</option>
+            <option value="1080-30" selected>1080p · 30 fps</option>
+            <option value="1080-60">1080p · 60 fps (jogos e vídeos)</option>
+          </select>
         </div>
         <div class="set-row">
           <span class="set-text"><b>Codificador de vídeo</b><small>A placa de vídeo deixa o processador livre para o jogo.</small></span>
-          <select id="setEncoder" aria-label="Codificador padrão"></select>
+          <select id="setEncoder" aria-label="Codificador de vídeo">
+            <option value="gpu" selected>H.264 · Placa de vídeo</option>
+            <option value="cpu">VP8 · Processador</option>
+          </select>
         </div>
         <div class="set-row">
-          <span class="set-text"><b>Transmitir com som do PC</b><small>Tela inteira: sem o Discord. Uma janela: só o som dela. Nunca o microfone.</small></span>
+          <span class="set-text"><b>Transmitir com som do PC</b><small id="setAudioNote">Tela inteira: sem o Discord. Uma janela: só o som dela. Nunca o microfone.</small></span>
           <label class="switch"><input type="checkbox" id="setAudio" aria-label="Transmitir com som do PC"></label>
         </div>
       </section>
@@ -585,9 +981,27 @@
   <button id="updateLater" class="ib" type="button" title="Depois (instala quando fechar o app)"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
 </div>
 
+<!-- =================== PERGUNTAS (criar grupo, convite, apagar…) =================== -->
+<div id="dlg" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="dlgTitle">
+  <form id="dlgForm" class="sheet dlg-sheet" novalidate>
+    <h2 id="dlgTitle"></h2>
+    <p id="dlgText" class="set-lead"></p>
+    <div id="dlgBody"></div>
+    <p id="dlgMsg" class="msg" role="status"></p>
+    <div class="dlg-foot">
+      <button id="dlgCancel" class="btn" type="button">Cancelar</button>
+      <button id="dlgOk" class="btn primary" type="submit">OK</button>
+    </div>
+  </form>
+</div>
+
+<div id="menu" class="menu hidden" role="menu"></div>
+<div id="tip" class="tip hidden" role="tooltip"></div>
+
 <div id="toasts" aria-live="polite"></div>
 
 <script src="node_modules/peerjs/dist/peerjs.min.js"></script>
+<script src="auth-bundle.js"></script>
 <script src="renderer.js"></script>
 </body>
 </html>

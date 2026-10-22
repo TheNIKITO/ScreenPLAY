@@ -22,6 +22,11 @@ const RECHECK_EVERY = 30 * 60 * 1000;   // com o app aberto, procura de novo a c
 
 let splash = null;
 let mainWin = null;
+let allowClose = false;   // true = a página já se despediu (ou passou do tempo), pode fechar
+function finishClose() {
+  allowClose = true;
+  if (mainWin && !mainWin.isDestroyed()) mainWin.close();
+}
 let splashState = { text: 'Iniciando…', progress: null, version: app.getVersion() };
 let readyVersion = null;     // atualização baixada esperando reiniciar
 let pendingSource = null;    // fonte escolhida no seletor, usada no próximo getDisplayMedia
@@ -146,8 +151,8 @@ function createMain() {
   mainWin = new BrowserWindow({
     width: 1280,
     height: 800,
-    minWidth: 900,
-    minHeight: 600,
+    minWidth: 1040,
+    minHeight: 620,
     show: false,
     title: 'ScreenPLAY',
     backgroundColor: windowBg(),
@@ -168,6 +173,17 @@ function createMain() {
     if (launchedMinimized) mainWin.minimize();   // aparece só na barra de tarefas
     else mainWin.show();
     if (splash && !splash.isDestroyed()) splash.close();
+  });
+  // Antes de fechar, a página avisa os amigos que você ficou offline (espera no máximo 1,5 s).
+  let closeAsked = false;
+  mainWin.on('close', (e) => {
+    if (allowClose || mainWin.webContents.isDestroyed()) return;
+    e.preventDefault();
+    if (closeAsked) return;
+    closeAsked = true;
+    mainWin.hide();   // some na hora; a despedida acontece por trás
+    mainWin.webContents.send('tav:closing');
+    setTimeout(finishClose, 1500);
   });
   mainWin.on('closed', () => {
     mainWin = null;
@@ -272,6 +288,8 @@ function registerIpc() {
   ipcMain.handle('tav:version', () => app.getVersion());
   ipcMain.handle('tav:hardware', () => hardwareInfo());
   ipcMain.handle('tav:settings-get', () => getAppSettings());
+  // Testes: TAV_FIREBASE_EMULATOR=127.0.0.1 usa o Firebase local (emulador) em vez do de verdade.
+  ipcMain.handle('tav:dev-flags', () => ({ emulator: process.env.TAV_FIREBASE_EMULATOR || '' }));
   ipcMain.handle('tav:settings-set', (_e, patch) => setAppSettings(patch || {}));
 
   // "Procurar atualização agora" (Configurações → Sobre). Se tiver, baixa em segundo plano e o
@@ -307,8 +325,11 @@ function registerIpc() {
   });
 
   ipcMain.on('tav:restart-update', () => {
-    if (readyVersion) autoUpdater.quitAndInstall(true, true);
+    if (!readyVersion) return;
+    allowClose = true;   // a página já avisou que ficou offline
+    autoUpdater.quitAndInstall(true, true);
   });
+  ipcMain.on('tav:can-close', finishClose);
 
   ipcMain.handle('tav:sources', async () => {
     const sources = await desktopCapturer.getSources({

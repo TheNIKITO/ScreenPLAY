@@ -1,7 +1,7 @@
 {
   "name": "screenplay",
   "productName": "ScreenPLAY",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "Transmita a tela do PC para seus amigos, com ou sem som (sem microfone).",
   "main": "main.js",
   "author": "ScreenPLAY",
@@ -10,7 +10,9 @@
   "scripts": {
     "start": "electron .",
     "build:audio": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-audio.ps1",
-    "predist": "npm run build:audio",
+    "build:auth": "esbuild src/auth-entry.js --bundle --format=iife --minify --target=chrome130 --legal-comments=none --outfile=auth-bundle.js",
+    "prestart": "npm run build:auth",
+    "predist": "npm run build:audio && npm run build:auth",
     "dist": "electron-builder --win --publish never"
   },
   "dependencies": {
@@ -19,7 +21,9 @@
   },
   "devDependencies": {
     "electron": "44.8.0",
-    "electron-builder": "26.15.3"
+    "electron-builder": "26.15.3",
+    "esbuild": "0.28.2",
+    "firebase": "13.1.0"
   },
   "build": {
     "appId": "com.screenplay.app",
@@ -34,6 +38,7 @@
       "pcm-worklet.js",
       "discord.js",
       "theme-boot.js",
+      "auth-bundle.js",
       "assets/**"
     ],
     "extraResources": [

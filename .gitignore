@@ -2,3 +2,4 @@ node_modules/
 dist/
 *.log
 native/*.exe
+auth-bundle.js
