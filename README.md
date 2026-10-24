@@ -17,7 +17,7 @@ Na primeira vez o Windows pode mostrar "O Windows protegeu o computador": clique
 
 Só quem criou o grupo cria, renomeia e apaga canais e salas, e troca o nome e a foto do grupo.
 
-Na direita fica a lista de membros do grupo (online e offline, e em que sala cada um está). Na engrenagem → **Perfil** você troca sua foto e escolhe um efeito animado para o seu nome.
+Na direita fica a lista de membros do grupo (online e offline, e em que sala cada um está). Clicando em alguém dá pra mandar uma **mensagem privada** — as conversas privadas ficam no **Início** (o logo no topo da barra). No chat dá pra mandar links, imagens e arquivos de até 8 MB (botão **+**, colar ou arrastar). Na engrenagem → **Perfil** você troca sua foto e escolhe um efeito animado para o seu nome.
 
 A imagem vai direto de um PC para o outro (WebRTC). Para os PCs se encontrarem é usado o servidor público gratuito do [PeerJS](https://peerjs.com/). As mensagens dos canais de texto ficam no Firebase.
 

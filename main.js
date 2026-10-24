@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, desktopCapturer, ipcMain, powerSaveBlocker, screen, session, shell } = require('electron');
+const { app, BrowserWindow, Menu, desktopCapturer, dialog, ipcMain, powerSaveBlocker, screen, session, shell } = require('electron');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
@@ -311,6 +311,23 @@ function registerIpc() {
 
   // Só abre a página de versões do ScreenPLAY no navegador.
   ipcMain.on('tav:open-releases', () => { shell.openExternal(RELEASES_URL); });
+  // Links do chat abrem no navegador (só http/https).
+  ipcMain.on('tav:open-link', (_e, raw) => {
+    try {
+      const url = new URL(String(raw));
+      if (url.protocol === 'http:' || url.protocol === 'https:') shell.openExternal(url.href);
+    } catch { /* link inválido: ignora */ }
+  });
+  // Salvar um anexo do chat: pergunta onde (começa em Downloads) e grava.
+  ipcMain.handle('tav:save-file', async (_e, name, data) => {
+    const safe = path.basename(String(name || 'arquivo')).replace(/[<>:"|?*\u0000-\u001f]/g, '_').trim().slice(0, 150) || 'arquivo';
+    const win = mainWin && !mainWin.isDestroyed() ? mainWin : undefined;
+    const r = await dialog.showSaveDialog(win, { defaultPath: path.join(app.getPath('downloads'), safe) });
+    if (r.canceled || !r.filePath) return null;
+    await fs.promises.writeFile(r.filePath, Buffer.from(data));
+    return r.filePath;
+  });
+  ipcMain.on('tav:show-file', (_e, file) => { if (typeof file === 'string' && file) shell.showItemInFolder(file); });
 
   // Status no Discord (Rich Presence). A página manda só o estado; o texto é montado em discord.js.
   ipcMain.on('tav:presence', (_e, state) => {

@@ -9,8 +9,10 @@
 //   invites/{código}               -> { gid }   convite de um grupo
 //   groups/{gid}                   -> { name, photo, ownerUid, invite, memberUids, members: {uid: {name, via}}, createdAt }
 //     channels/{cid}               -> { name, type: 'text' | 'stream', pos }
-//       messages/{mid}             -> { uid, name, text, at }
+//       messages/{mid}             -> { uid, name, text, at, att? }   att = anexo (imagem ou arquivo)
+//     files/{fid}                  -> { uid, chunks }   anexo guardado em pedaços: files/{fid}/chunks/{0..n} -> { d }
 //     rooms/{cid}                  -> { people: [{uid, name, live}], at, by }   quem está em cada sala
+//   dms/{uidA_uidB}                -> { uids, names, via, at, last, read }   mensagem privada (mesmas messages/ e files/)
 // As regras de segurança (coladas no console do Firebase) só deixam cada um mexer na própria conta
 // e só o dono do grupo mexer nos canais.
 
@@ -223,10 +225,26 @@ function groupFrom(snap) {
     createdAt: millis(d.createdAt),
   };
 }
+const THUMB_RE = /^data:image\/(webp|jpeg|png|gif);base64,[A-Za-z0-9+/=]+$/;
+// Anexo de uma mensagem: { kind: 'image' | 'file', name, size, mime, fid, chunks (+ w, h, thumb nas imagens) }
+function attFrom(a) {
+  if (!a || typeof a !== 'object' || typeof a.fid !== 'string' || !a.fid) return null;
+  const chunks = Number(a.chunks) || 0;
+  if (chunks < 1 || chunks > 16) return null;
+  const base = {
+    name: String(a.name || 'arquivo').slice(0, 120), size: Number(a.size) || 0,
+    mime: String(a.mime || '').slice(0, 100), fid: a.fid, chunks,
+  };
+  if (a.kind === 'image' && typeof a.thumb === 'string' && THUMB_RE.test(a.thumb)) {
+    return { kind: 'image', ...base, w: Number(a.w) || 0, h: Number(a.h) || 0, thumb: a.thumb };
+  }
+  if (a.kind === 'file') return { kind: 'file', ...base };
+  return null;
+}
 function messageFrom(snap) {
   const d = snap.data({ serverTimestamps: 'estimate' });
   return {
-    id: snap.id, uid: d.uid || '', name: d.name || '', text: d.text || '',
+    id: snap.id, uid: d.uid || '', name: d.name || '', text: d.text || '', att: attFrom(d.att),
     at: millis(d.at) || Date.now(), pending: snap.metadata.hasPendingWrites, cursor: snap,
   };
 }
@@ -237,15 +255,42 @@ function watchError(what, onError) {
   };
 }
 
-// Apaga as mensagens de um canal (aos poucos: até 400 por vez).
-async function clearMessages(gid, cid) {
-  for (let page = 0; page < 25; page++) {
-    const qs = await getDocs(query(messagesCol(gid, cid), limit(400)));
+// ---------------- conversas (canais de texto e mensagens privadas) ----------------
+// t = { gid, cid } (canal de texto de um grupo) ou { did } (mensagem privada).
+// Anexos ficam no próprio Firestore, em pedaços de texto base64 (o Storage do Firebase exige plano pago).
+const CHUNK_BYTES = 540000;   // múltiplo de 3: o base64 de cada pedaço emenda direitinho com o próximo
+const chatMsgs = (t) => (t.did ? collection(db, 'dms', t.did, 'messages') : messagesCol(t.gid, t.cid));
+const chatFiles = (t) => (t.did ? collection(db, 'dms', t.did, 'files') : collection(db, 'groups', t.gid, 'files'));
+
+// Apaga um anexo (pedaços + ficha) dentro de um lote.
+function deleteFileIn(batch, files, fid, chunks) {
+  for (let i = 0; i < chunks; i++) batch.delete(doc(files, fid, 'chunks', String(i)));
+  batch.delete(doc(files, fid));
+}
+// Apaga as mensagens de uma conversa (aos poucos) e os anexos delas.
+async function clearChat(t) {
+  for (let page = 0; page < 200; page++) {
+    const qs = await getDocs(query(chatMsgs(t), limit(25)));
     if (qs.empty) return;
     const batch = writeBatch(db);
-    for (const m of qs.docs) batch.delete(m.ref);
+    for (const m of qs.docs) {
+      batch.delete(m.ref);
+      const a = attFrom(m.data().att);
+      if (a) deleteFileIn(batch, chatFiles(t), a.fid, a.chunks);
+    }
     await batch.commit();
-    if (qs.size < 400) return;
+    if (qs.size < 25) return;
+  }
+}
+// Apaga anexos que sobraram (ex.: envio que caiu no meio).
+async function clearFiles(files) {
+  for (let page = 0; page < 200; page++) {
+    const qs = await getDocs(query(files, limit(25)));
+    if (qs.empty) return;
+    const batch = writeBatch(db);
+    for (const f of qs.docs) deleteFileIn(batch, files, f.id, Math.min(16, Number(f.data().chunks) || 0));
+    await batch.commit();
+    if (qs.size < 25) return;
   }
 }
 
@@ -338,8 +383,9 @@ const Groups = {
     if (!g.exists()) return;
     const chans = await getDocs(channelsCol(gid));
     for (const ch of chans.docs) {
-      if (ch.data().type === 'text') await clearMessages(gid, ch.id);
+      if (ch.data().type === 'text') await clearChat({ gid, cid: ch.id });
     }
+    await clearFiles(collection(db, 'groups', gid, 'files'));
     const rooms = await getDocs(roomsCol(gid));
     const batch = writeBatch(db);
     for (const ch of chans.docs) batch.delete(ch.ref);
@@ -381,33 +427,11 @@ const Groups = {
     await updateDoc(doc(channelsCol(gid), cid), { name: channelName(rawName) });
   },
   async deleteChannel(gid, cid) {
-    await clearMessages(gid, cid);
+    await clearChat({ gid, cid });
     const batch = writeBatch(db);
     batch.delete(doc(channelsCol(gid), cid));
     batch.delete(doc(roomsCol(gid), cid));
     await batch.commit();
-  },
-
-  // ----- mensagens -----
-  // As 50 mais novas, ao vivo. cb(lista do mais velho pro mais novo, temMaisAntigas)
-  watchMessages(gid, cid, cb, onError) {
-    const q = query(messagesCol(gid, cid), orderBy('at', 'desc'), limit(PAGE));
-    return onSnapshot(q, { includeMetadataChanges: true }, (qs) => {
-      cb(qs.docs.map(messageFrom).reverse(), qs.size >= PAGE);
-    }, watchError('mensagens', onError));
-  },
-  async olderMessages(gid, cid, oldest) {
-    const qs = await getDocs(query(messagesCol(gid, cid), orderBy('at', 'desc'), startAfter(oldest.cursor), limit(PAGE)));
-    return { list: qs.docs.map(messageFrom).reverse(), more: qs.size >= PAGE };
-  },
-  async sendMessage(gid, cid, raw) {
-    const { uid, nick } = whoAmI();
-    const text = String(raw || '').replace(/\r\n/g, '\n').trim().slice(0, 2000);
-    if (!text) return;
-    await addDoc(messagesCol(gid, cid), { uid, name: nick, text, at: serverTimestamp() });
-  },
-  async deleteMessage(gid, cid, mid) {
-    await deleteDoc(doc(messagesCol(gid, cid), mid));
   },
 
   // ----- quem está em cada sala de transmissão -----
@@ -427,9 +451,129 @@ const Groups = {
   },
 };
 
+const Chat = {
+  chunkBytes: CHUNK_BYTES,
+  // As 50 mais novas, ao vivo. cb(lista do mais velho pro mais novo, temMaisAntigas)
+  watch(t, cb, onError) {
+    const q = query(chatMsgs(t), orderBy('at', 'desc'), limit(PAGE));
+    return onSnapshot(q, { includeMetadataChanges: true }, (qs) => {
+      cb(qs.docs.map(messageFrom).reverse(), qs.size >= PAGE);
+    }, watchError('mensagens', onError));
+  },
+  async older(t, oldest) {
+    const qs = await getDocs(query(chatMsgs(t), orderBy('at', 'desc'), startAfter(oldest.cursor), limit(PAGE)));
+    return { list: qs.docs.map(messageFrom).reverse(), more: qs.size >= PAGE };
+  },
+  async send(t, raw, att) {
+    const { uid, nick } = whoAmI();
+    const text = String(raw || '').replace(/\r\n/g, '\n').trim().slice(0, 2000);
+    if (!text && !att) return;
+    const data = { uid, name: nick, text, at: serverTimestamp() };
+    if (att) data.att = att;
+    if (!t.did) {
+      await addDoc(chatMsgs(t), data);
+      return;
+    }
+    // Mensagem privada: a conversa guarda a última mensagem (pra lista e pro aviso de não lida).
+    const preview = (text || (att.kind === 'image' ? '🖼️ Imagem' : `📎 ${att.name}`)).slice(0, 120);
+    const batch = writeBatch(db);
+    batch.set(doc(chatMsgs(t)), data);
+    batch.update(doc(db, 'dms', t.did), {
+      at: serverTimestamp(), last: { uid, text: preview, at: serverTimestamp() },
+      [`names.${uid}`]: nick, [`read.${uid}`]: serverTimestamp(),
+    });
+    await batch.commit();
+  },
+  async remove(t, m) {
+    const batch = writeBatch(db);
+    batch.delete(doc(chatMsgs(t), m.id));
+    if (m.att) deleteFileIn(batch, chatFiles(t), m.att.fid, m.att.chunks);
+    await batch.commit();
+  },
+  // Guarda um anexo: parts = pedaços em base64 (até 16). onProgress(0..1)
+  async upload(t, parts, onProgress) {
+    const { uid } = whoAmI();
+    if (!parts.length || parts.length > 16) throw fail('file/too-big');
+    const ref = doc(chatFiles(t));
+    await setDoc(ref, { uid, chunks: parts.length });
+    for (let i = 0; i < parts.length; i++) {
+      await setDoc(doc(ref, 'chunks', String(i)), { d: parts[i] });
+      if (onProgress) onProgress((i + 1) / parts.length);
+    }
+    return { fid: ref.id, chunks: parts.length };
+  },
+  // Baixa um anexo: devolve os pedaços em base64, na ordem.
+  async download(t, att, onProgress) {
+    const out = [];
+    for (let i = 0; i < att.chunks; i++) {
+      const s = await getDoc(doc(chatFiles(t), att.fid, 'chunks', String(i)));
+      if (!s.exists()) throw fail('file/missing');
+      out.push(String(s.data().d || ''));
+      if (onProgress) onProgress((i + 1) / att.chunks);
+    }
+    return out;
+  },
+};
+
+// ---------------- mensagens privadas ----------------
+const dmId = (a, b) => (a < b ? `${a}_${b}` : `${b}_${a}`);
+function dmFrom(snap) {
+  const d = snap.data({ serverTimestamps: 'estimate' });
+  const read = {};
+  for (const [k, v] of Object.entries(d.read || {})) read[k] = millis(v);
+  return {
+    id: snap.id,
+    uids: Array.isArray(d.uids) ? d.uids : [],
+    names: d.names && typeof d.names === 'object' ? d.names : {},
+    at: millis(d.at),
+    read,
+    last: d.last && typeof d.last === 'object'
+      ? { uid: d.last.uid || '', text: String(d.last.text || ''), at: millis(d.last.at) }
+      : null,
+  };
+}
+const Dms = {
+  idFor: dmId,
+  // Minhas conversas privadas, ao vivo.
+  watch(cb, onError) {
+    const { uid } = whoAmI();
+    const q = query(collection(db, 'dms'), where('uids', 'array-contains', uid));
+    return onSnapshot(q, (qs) => cb(qs.docs.map(dmFrom)), watchError('privadas', onError));
+  },
+  // Abre (ou cria) a conversa com alguém de um grupo em comum (viaGid).
+  async ensure(otherUid, viaGid) {
+    const { uid, nick } = whoAmI();
+    if (!otherUid || otherUid === uid) throw fail('dm/self');
+    const did = dmId(uid, otherUid);
+    const ref = doc(db, 'dms', did);
+    const exists = async () => {
+      try { return (await getDoc(ref)).exists(); } catch { return false; }   // sem permissão = ainda não existe
+    };
+    if (await exists()) return did;
+    const other = await getDoc(doc(db, 'users', otherUid));
+    if (!other.exists()) throw fail('dm/no-user');
+    try {
+      await setDoc(ref, {
+        uids: [uid, otherUid].sort(), names: { [uid]: nick, [otherUid]: other.data().name },
+        via: viaGid, at: serverTimestamp(), read: {},
+      });
+    } catch (err) {
+      if (await exists()) return did;   // a outra pessoa abriu a conversa no mesmo instante
+      throw err;
+    }
+    return did;
+  },
+  async markRead(did) {
+    const { uid, nick } = whoAmI();
+    await updateDoc(doc(db, 'dms', did), { [`read.${uid}`]: serverTimestamp(), [`names.${uid}`]: nick });
+  },
+};
+
 // ---------------- o que o app usa ----------------
 window.SPAuth = {
   groups: Groups,
+  chat: Chat,
+  dms: Dms,
   // Liga o Firebase. Resolve com o perfil atual (ou null) assim que souber se já tem alguém logado.
   init(opts = {}) {
     const app = initializeApp(CONFIG);

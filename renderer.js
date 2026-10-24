@@ -25,6 +25,8 @@ const ICON = {
   fs:     '<path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/>',
   close:  '<path d="M18 6 6 18M6 6l12 12"/>',
   screen: '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>',
+  file:   '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/>',
+  download: '<path d="M12 3v12M7 10l5 5 5-5M5 21h14"/>',
   hash:   '<path d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18"/>',
   plus:   '<path d="M12 5v14M5 12h14"/>',
   more:   '<circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/>',
@@ -59,6 +61,7 @@ const S = {
   roomSeen: 0, aliveTimer: null,   // última vez que a sala deu sinal de vida / meu sinal de vida
   group: null,            // { gid, cid, name } — a sala de transmissão (canal) em que estou
   entered: false,         // já entrei de fato (conectado à sala)
+  focus: '',              // a transmissão em destaque (grande); as outras ficam pequenas embaixo
   busy: false, leaving: false, joining: null,
   room: null,             // { peer, conns, roster, order, rebuildUntil, timer } — só no PC do dono
   roomConn: null,         // minha conexão com a sala
@@ -104,10 +107,11 @@ function store(key, val) {
   return null;
 }
 
-function toast(text, kind = '', ms = 4000) {
+function toast(text, kind = '', ms = 4000, onClick) {
   const el = document.createElement('div');
-  el.className = 'toast ' + kind;
+  el.className = 'toast ' + kind + (onClick ? ' click' : '');
   el.textContent = text;
+  if (onClick) el.onclick = () => { el.remove(); onClick(); };
   $('toasts').appendChild(el);
   setTimeout(() => el.remove(), ms);
 }
@@ -203,6 +207,7 @@ const SFX = {
   live:    [[523.25, 0, 0.3], [659.25, 0.07, 0.3], [783.99, 0.14, 0.3], [1046.5, 0.21, 0.4]], // começou a transmitir
   liveEnd: [[783.99, 0, 0.24], [659.25, 0.07, 0.24], [523.25, 0.14, 0.3]],          // parou de transmitir
   viewer:  [[1318.5, 0, 0.12], [1760, 0.06, 0.2]],                                  // alguém começou a te assistir
+  message: [[987.77, 0, 0.1], [1318.5, 0.07, 0.16]],                                // mensagem privada nova
 };
 function sfx(name) {
   if (!SFX[name] || sfxVolume <= 0) return;
@@ -673,7 +678,7 @@ function leaveRoom(reason, quiet) {
     peer: null, myId: '', code: '', group: null, entered: false, joining: null, room: null, roomConn: null,
     ownerId: '', lostOwner: '', migrating: false, view: new Map(), viewReady: false, outCalls: new Map(),
     tiles: new Map(), seq: 0, wanted: new Set(), watchers: new Set(), watching: new Map(), audioMode: 'none',
-    encoderUsed: null, pings: new Map(),
+    encoderUsed: null, pings: new Map(), focus: '',
   });
   $('grid').textContent = '';
   $('reactLayer').textContent = '';
@@ -846,20 +851,38 @@ function renderShareUI() {
 }
 
 // Telas que estou assistindo + um cartão "Assistir" para cada transmissão que ainda não abri.
+// A escolhida fica em destaque (grande, dentro do app) e as outras ficam pequenas embaixo.
+// Tela cheia só pelo botão (ou clicando duas vezes).
 function renderStage() {
   const grid = $('grid');
   for (const el of [...grid.querySelectorAll('.card-stream')]) el.remove();
   const live = [...S.view].filter(([id, p]) => id !== S.myId && p.sharing && !S.tiles.has(id));
   for (const [id, p] of live) grid.appendChild(makeCard(id, p));
+  if (!S.tiles.has(S.focus) && !S.watching.has(S.focus)) S.focus = '';
+  const main = S.tiles.has(S.focus) ? S.focus : (S.tiles.size ? [...S.tiles.keys()][0] : '');
+  const spot = !!main;
+  const minis = S.tiles.size - (spot ? 1 : 0) + live.length;
+  grid.classList.toggle('spot', spot);
+  grid.style.setProperty('--strip', spot && minis ? '136px' : '0px');
+  for (const [id, t] of S.tiles) {
+    t.el.classList.toggle('main', id === main);
+    t.el.classList.toggle('tmini', spot && id !== main);
+  }
+  for (const el of grid.querySelectorAll('.card-stream')) el.classList.toggle('tmini', spot);
   const n = S.tiles.size + live.length;
   $('empty').classList.toggle('hidden', n > 0);
   $('emptyTitle').textContent = S.localStream ? 'Você está transmitindo' : 'Ninguém está transmitindo agora';
   $('emptyText').textContent = S.localStream
     ? 'As reações de quem assiste aparecem aqui. Quando outra pessoa transmitir, ela aparece aqui também.'
     : 'Quando alguém da sala transmitir, a tela aparece aqui.';
-  grid.classList.toggle('solo', n === 1);
+  grid.classList.toggle('solo', !spot && n === 1);
   updateAwake();
   updatePresence();
+}
+function focusTile(id) {
+  if (!S.tiles.has(id) || S.focus === id) return;
+  S.focus = id;
+  renderStage();
 }
 
 function makeCard(id, p) {
@@ -888,6 +911,7 @@ function watch(id) {
   if (!p || !p.sharing || S.tiles.has(id)) return;
   const seq = p.seq;
   S.watching.set(id, seq);
+  S.focus = id;   // a que eu escolhi assistir abre em destaque
   if (!relay(id, { t: 'watch', on: true, seq })) {
     S.watching.delete(id);
     toast('Sem conexão com a sala agora — tente de novo em instantes.', 'warn');
@@ -1414,6 +1438,10 @@ function makeTile(id, seq, call) {
   el.querySelector('.fs').onclick = toggleFs;
   el.querySelector('.stopw').onclick = () => unwatch(id);
   video.ondblclick = toggleFs;
+  // Clicar numa tela pequena (embaixo) traz ela pro destaque.
+  el.addEventListener('click', (e) => {
+    if (el.classList.contains('tmini') && !e.target.closest('button, input')) focusTile(id);
+  });
 
   // Esconde a barra quando o mouse fica parado.
   let idleTimer;
@@ -1500,9 +1528,11 @@ const G = {
   synced: new Set(),    // grupos onde já atualizei meu nome
   wantGid: '',          // abrir assim que aparecer na lista (acabei de criar ou entrar)
   wantCid: '',          // idem, para um canal de texto que acabei de criar
+  dm: '',               // conversa privada aberta (no Início)
+  wantDm: '',           // abrir assim que a conversa nova aparecer
 };
 // Mensagens do canal de texto aberto.
-const M = { gid: '', cid: '', live: [], older: [], more: false, loaded: false, loading: false, error: '', unsub: null, atBottom: true };
+const M = { t: null, key: '', live: [], older: [], more: false, loaded: false, loading: false, error: '', unsub: null, atBottom: true };
 const GAPI = () => window.SPAuth.groups;
 
 const GROUP_ERRORS = {
@@ -1548,6 +1578,7 @@ function startGroups(uid) {
   if (G.uid === uid && G.unsub) return;
   stopGroups();
   G.uid = uid;
+  startDms();
   G.unsub = GAPI().watchGroups(onGroups, (err) => {
     G.ready = true;
     G.error = groupErr(err, 'Não consegui carregar seus grupos');
@@ -1558,7 +1589,9 @@ function startGroups(uid) {
 function stopGroups() {
   if (G.unsub) { try { G.unsub(); } catch {} }
   closeGroup();
-  Object.assign(G, { uid: '', list: new Map(), ready: false, unsub: null, error: '', goneOk: new Set(), synced: new Set(), wantGid: '' });
+  stopMessages();
+  stopDms();
+  Object.assign(G, { uid: '', list: new Map(), ready: false, unsub: null, error: '', goneOk: new Set(), synced: new Set(), wantGid: '', dm: '', wantDm: '' });
 }
 // Para de ouvir o grupo aberto.
 function closeGroup() {
@@ -1619,6 +1652,7 @@ function syncMemberNames() {
 // ----- navegação -----
 function openHome() {
   closeGroup();
+  G.dm = '';
   saveNav();
   renderRail();
   renderGroupHead();
@@ -1681,14 +1715,22 @@ function onChannels(gid, list) {
 // Mostra de novo o que faz sentido, sem tirar a pessoa de onde ela está.
 function refreshView() {
   if (G.view === 'room') return;
-  if (G.view === 'chat' && G.cid && M.cid === G.cid && (G.channels || []).some((c) => c.id === G.cid)) {
-    renderChatHead();
-    return;
+  if (G.view === 'chat' && M.t) {
+    const dmOk = M.t.did && !G.gid && D.list.has(M.t.did);
+    const chOk = !M.t.did && G.cid && M.key === chatKey({ gid: G.gid, cid: G.cid })
+      && (G.channels || []).some((c) => c.id === G.cid);
+    if (dmOk || chOk) {
+      renderChatHead();
+      return;
+    }
   }
   showDefaultView();
 }
 function showDefaultView() {
-  if (!G.gid) return showView('welcome');
+  if (!G.gid) {
+    if (G.dm && openDm(G.dm)) return;
+    return showView('welcome');
+  }
   if (G.channels === null) return showView('nochan');
   const texts = G.channels.filter((c) => c.type === 'text');
   const want = G.cid || (loadNav().last || {})[G.gid];
@@ -1757,7 +1799,7 @@ function renderRail() {
 
 function renderGroupHead() {
   const g = groupOf(G.gid);
-  $('groupName').textContent = g ? g.name : 'ScreenPLAY';
+  $('groupName').textContent = g ? g.name : 'Início';
   $('groupHead').disabled = !g;
 }
 
@@ -1772,7 +1814,8 @@ function renderChannelList() {
   box.textContent = '';
   const g = groupOf(G.gid);
   if (!g) {
-    box.appendChild(chanNote(G.list.size ? 'Escolha um grupo na barra da esquerda.' : 'Seus grupos aparecem na barra da esquerda.'));
+    renderDmList(box);   // Início: as conversas privadas
+    box.scrollTop = keep;
     return;
   }
   if (G.chError) { box.appendChild(chanNote(G.chError)); return; }
@@ -1798,7 +1841,7 @@ function chanNote(text) {
   el.textContent = text;
   return el;
 }
-function chanSection(title, addTitle, onAdd) {
+function chanSection(title, addTitle = '', onAdd = null) {
   const el = document.createElement('div');
   el.className = 'chan-sec';
   const t = document.createElement('span');
@@ -1868,6 +1911,7 @@ function peopleList(people) {
     const av = document.createElement('span');
     av.className = 'av';
     paintAv(av, p.uid, p.name);
+    if (p.uid) li.onclick = (e) => { e.stopPropagation(); openUserCard(p.uid, cleanName(p.name), li, 'right'); };
     const nm = document.createElement('span');
     nm.className = 'pname ' + fxClass(p.uid);
     nm.textContent = cleanName(p.name);
@@ -1904,6 +1948,7 @@ function renderMembers() {
   const show = !!g && membersOn && G.view !== 'welcome';
   $('members').classList.toggle('hidden', !show);
   for (const b of document.querySelectorAll('.members-toggle')) {
+    b.classList.toggle('hidden', !g);
     b.classList.toggle('on', membersOn);
     b.title = membersOn ? 'Esconder os membros do grupo' : 'Mostrar os membros do grupo';
   }
@@ -1979,6 +2024,7 @@ function memberEl(p) {
   }
   el.append(wrap, text);
   if (p.uid === G.uid) el.title = 'Você';
+  el.onclick = () => openUserCard(p.uid, p.name, el, 'left');
   return el;
 }
 
@@ -2028,36 +2074,61 @@ async function memberOk(gid, uid) {
   return GAPI().isMember(gid, uid);
 }
 
-// ----- conversa (canal de texto) -----
+// ----- conversa (canal de texto do grupo ou mensagem privada) -----
+// M.t = { gid, cid } (canal de texto) ou { did } (mensagem privada).
+const chatKey = (t) => (!t ? '' : t.did ? `d:${t.did}` : `g:${t.gid}:${t.cid}`);
+const CHAT = () => window.SPAuth.chat;
+const FILE_MAX = 8 * 1024 * 1024;   // anexos de até 8 MB (ficam no banco gratuito do Firebase)
+
 function openChat(cid, focus) {
   const ch = (G.channels || []).find((c) => c.id === cid && c.type === 'text');
   if (!ch) return false;
   G.cid = cid;
   saveNav();
-  if (M.gid !== G.gid || M.cid !== cid) watchMessages(G.gid, cid);
+  const t = { gid: G.gid, cid };
+  if (M.key !== chatKey(t)) watchMessages(t);
   showView('chat');
   renderChatHead();
   if (focus) $('msgInput').focus();
   return true;
 }
 function renderChatHead() {
+  const title = $('chatTitle');
+  const icon = $('chatIcon');
+  if (M.t && M.t.did) {
+    const o = dmOther(D.list.get(M.t.did));
+    icon.textContent = '';
+    const av = document.createElement('span');
+    av.className = 'av chat-head-av';
+    paintAv(av, o.uid, o.name);
+    icon.appendChild(av);
+    title.textContent = o.name;
+    title.className = fxClass(o.uid);
+    $('msgInput').placeholder = `Conversar com @${o.name}`;
+    return;
+  }
   const ch = (G.channels || []).find((c) => c.id === G.cid);
   if (!ch) return;
-  $('chatTitle').textContent = ch.name;
+  icon.innerHTML = svg(ICON.hash, 20);
+  title.textContent = ch.name;
+  title.className = '';
   $('msgInput').placeholder = `Conversar em #${ch.name}`;
 }
 
 function stopMessages() {
   if (M.unsub) { try { M.unsub(); } catch {} }
-  Object.assign(M, { gid: '', cid: '', live: [], older: [], more: false, loaded: false, loading: false, error: '', unsub: null, atBottom: true });
+  Object.assign(M, { t: null, key: '', live: [], older: [], more: false, loaded: false, loading: false, error: '', unsub: null, atBottom: true });
   $('msgList').textContent = '';
+  clearTray();
 }
-function watchMessages(gid, cid) {
+function watchMessages(t) {
   stopMessages();
-  Object.assign(M, { gid, cid });
+  M.t = t;
+  M.key = chatKey(t);
+  const key = M.key;
   renderMessages();
-  M.unsub = GAPI().watchMessages(gid, cid, (list, more) => {
-    if (M.gid !== gid || M.cid !== cid) return;
+  M.unsub = CHAT().watch(t, (list, more) => {
+    if (M.key !== key) return;
     // Mensagens que saíram da janela ao vivo só por serem antigas continuam na tela.
     const oldest = list.length ? list[0].at : Infinity;
     const ids = new Set(list.map((m) => m.id));
@@ -2069,7 +2140,7 @@ function watchMessages(gid, cid) {
     M.error = '';
     renderMessages();
   }, (err) => {
-    if (M.gid !== gid || M.cid !== cid) return;
+    if (M.key !== key) return;
     M.error = groupErr(err, 'Não consegui carregar as mensagens');
     M.loaded = true;
     renderMessages();
@@ -2095,6 +2166,11 @@ function dayLabel(at) {
   return new Date(at).toLocaleDateString('pt-BR', { day: 'numeric', month: 'long', year: 'numeric' });
 }
 const timeLabel = (at) => new Date(at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+function sizeLabel(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1).replace('.', ',')} MB`;
+}
 
 function chatNote(text) {
   const el = document.createElement('div');
@@ -2102,9 +2178,26 @@ function chatNote(text) {
   el.textContent = text;
   return el;
 }
-function chatIntro(name) {
+function chatIntro() {
   const el = document.createElement('div');
   el.className = 'chat-intro';
+  if (M.t && M.t.did) {
+    const o = dmOther(D.list.get(M.t.did));
+    const av = document.createElement('span');
+    av.className = 'av';
+    paintAv(av, o.uid, o.name);
+    const h = document.createElement('h3');
+    const nm = document.createElement('span');
+    nm.className = fxClass(o.uid);
+    nm.textContent = o.name;
+    h.appendChild(nm);
+    const p = document.createElement('p');
+    p.textContent = `Este é o começo da sua conversa privada com @${o.name}. Só vocês dois veem estas mensagens.`;
+    el.append(av, h, p);
+    return el;
+  }
+  const ch = (G.channels || []).find((c) => c.id === (M.t && M.t.cid));
+  const name = ch ? ch.name : '';
   el.innerHTML = `<div class="big-ico">${svg(ICON.hash, 34)}</div><h3></h3><p></p>`;
   el.querySelector('h3').textContent = `Bem-vindo a #${name}!`;
   el.querySelector('p').textContent = `Este é o começo do canal #${name}.`;
@@ -2118,13 +2211,12 @@ function renderMessages(mode) {
   const oldHeight = box.scrollHeight;
   const oldTop = box.scrollTop;
   box.textContent = '';
-  if (!M.cid) return;
+  if (!M.t) return;
   if (!M.loaded) { box.appendChild(chatNote('Carregando mensagens…')); return; }
   if (M.error) { box.appendChild(chatNote(M.error)); return; }
-  const ch = (G.channels || []).find((c) => c.id === M.cid);
   if (M.more) box.appendChild(chatNote(M.loading ? 'Carregando mensagens antigas…' : 'Role para cima para ver mensagens antigas'));
-  else box.appendChild(chatIntro(ch ? ch.name : ''));
-  const owner = isOwner(M.gid);
+  else box.appendChild(chatIntro());
+  const owner = !M.t.did && isOwner(M.t.gid);
   let prev = null;
   let day = '';
   for (const m of allMessages()) {
@@ -2146,11 +2238,20 @@ function renderMessages(mode) {
   else box.scrollTop = M.atBottom ? box.scrollHeight : oldTop;
 }
 
+// Nome atual de quem mandou (o do grupo ou o da conversa privada; senão, o que veio na mensagem).
+function authorName(m) {
+  if (M.t && M.t.did) {
+    const d = D.list.get(M.t.did);
+    return cleanName((d && d.names[m.uid]) || m.name);
+  }
+  const g = M.t && groupOf(M.t.gid);
+  return cleanName((g && g.members[m.uid] && g.members[m.uid].name) || m.name);
+}
+
 function messageEl(m, first, owner) {
   const el = document.createElement('div');
   el.className = 'cm' + (first ? ' first' : '') + (m.pending ? ' pending' : '');
-  const g = groupOf(M.gid);
-  const name = cleanName((g && g.members[m.uid] && g.members[m.uid].name) || m.name);
+  const name = authorName(m);
   const full = new Date(m.at).toLocaleString('pt-BR', { dateStyle: 'full', timeStyle: 'short' });
   if (first) {
     const av = document.createElement('span');
@@ -2166,6 +2267,8 @@ function messageEl(m, first, owner) {
     t.title = full;
     head.append(b, t);
     el.append(av, head);
+    av.onclick = () => openUserCard(m.uid, name, av, 'right');
+    b.onclick = () => openUserCard(m.uid, name, b, 'right');
   } else {
     const t = document.createElement('time');
     t.className = 'mside';
@@ -2173,10 +2276,18 @@ function messageEl(m, first, owner) {
     t.title = full;
     el.appendChild(t);
   }
-  const txt = document.createElement('div');
-  txt.className = 'mtext';
-  txt.textContent = m.text;
-  el.appendChild(txt);
+  if (m.text) {
+    const txt = document.createElement('div');
+    txt.className = 'mtext';
+    richText(txt, m.text);
+    el.appendChild(txt);
+  }
+  if (m.att) {
+    const box = document.createElement('div');
+    box.className = 'matt';
+    box.appendChild(attEl(m));
+    el.appendChild(box);
+  }
   if (!m.pending && (m.uid === G.uid || owner)) {
     const del = document.createElement('button');
     del.type = 'button';
@@ -2190,23 +2301,315 @@ function messageEl(m, first, owner) {
   return el;
 }
 
+// Links viram clicáveis (abrem no navegador).
+const URL_RE = /\b(?:https?:\/\/|www\.)[^\s<>"]+/gi;
+function richText(el, text) {
+  let last = 0;
+  for (const found of text.matchAll(URL_RE)) {
+    let url = found[0];
+    // Pontuação no fim não faz parte do link ("veja www.site.com." → sem o ponto), nem um ")" que fecha a frase.
+    const count = (ch) => url.split(ch).length - 1;
+    for (let prev = ''; prev !== url;) {
+      prev = url;
+      url = url.replace(/[.,!?;:'"]+$/, '');
+      if (url.endsWith(')') && count(')') > count('(')) url = url.slice(0, -1);
+    }
+    if (found.index > last) el.append(text.slice(last, found.index));
+    const href = /^https?:\/\//i.test(url) ? url : `https://${url}`;
+    const a = document.createElement('a');
+    a.className = 'mlink';
+    a.href = href;
+    a.title = href;
+    a.textContent = url;
+    a.onclick = (e) => { e.preventDefault(); openLink(href); };
+    el.appendChild(a);
+    last = found.index + url.length;
+  }
+  if (last < text.length) el.append(text.slice(last));
+}
+function openLink(url) {
+  if (IS_APP && window.tav.openLink) window.tav.openLink(url);
+  else window.open(url, '_blank', 'noopener');
+}
+
+// ----- anexos -----
+function attEl(m) {
+  const a = m.att;
+  if (a.kind === 'image') {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'mimg';
+    b.title = `${a.name} · clique para abrir`;
+    const img = document.createElement('img');
+    img.alt = a.name;
+    img.draggable = false;
+    const scale = Math.min(1, 380 / (a.w || 380), 300 / (a.h || 300));
+    img.width = Math.max(40, Math.round((a.w || 380) * scale));
+    img.height = Math.max(40, Math.round((a.h || 300) * scale));
+    img.src = a.thumb;
+    b.appendChild(img);
+    b.onclick = () => openViewer(m);
+    return b;
+  }
+  const box = document.createElement('div');
+  box.className = 'mfile';
+  box.innerHTML = `${svg(ICON.file, 28)}<div class="mf-text"><b></b><small></small></div>`;
+  box.querySelector('b').textContent = a.name;
+  box.querySelector('b').title = a.name;
+  box.querySelector('small').textContent = sizeLabel(a.size);
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'btn sm';
+  btn.innerHTML = `${svg(ICON.download, 15)}<span>Baixar</span>`;
+  btn.onclick = () => saveAttachment(M.t, a, btn);
+  box.appendChild(btn);
+  return box;
+}
+
+// Os pedaços (base64) viram bytes.
+function partsToBytes(parts) {
+  const arrays = parts.map((p) => Uint8Array.from(atob(p), (c) => c.charCodeAt(0)));
+  const out = new Uint8Array(arrays.reduce((n, a) => n + a.length, 0));
+  let at = 0;
+  for (const a of arrays) { out.set(a, at); at += a.length; }
+  return out;
+}
+async function saveBytes(name, bytes) {
+  if (IS_APP && window.tav.saveFile) {
+    const where = await window.tav.saveFile(name, bytes);
+    if (where) toast(`Salvo em ${where} — clique para mostrar na pasta.`, '', 6000, () => window.tav.showFile(where));
+    return;
+  }
+  const a = document.createElement('a');   // navegador: download normal
+  a.href = URL.createObjectURL(new Blob([bytes]));
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+async function saveAttachment(t, a, btn) {
+  const label = btn && btn.innerHTML;
+  if (btn) btn.disabled = true;
+  try {
+    const parts = await CHAT().download(t, a, (p) => { if (btn) btn.textContent = `${Math.round(p * 100)}%`; });
+    await saveBytes(a.name, partsToBytes(parts));
+  } catch (err) {
+    toast(groupErr(err, 'Não consegui baixar o arquivo'), 'err');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = label; }
+  }
+}
+
+// Imagem aberta grande (a miniatura aparece na hora; a imagem inteira chega em seguida).
+const fullCache = new Map();   // fid -> data URL (as últimas abertas)
+let viewing = null;
+async function openViewer(m) {
+  const a = m.att;
+  const t = M.t;
+  viewing = { m, t };
+  $('viewerImg').src = fullCache.get(a.fid) || a.thumb;
+  $('viewerName').textContent = a.name;
+  $('viewerNote').textContent = `${a.w}×${a.h} · ${sizeLabel(a.size)}`;
+  $('viewer').classList.remove('hidden');
+  if (fullCache.has(a.fid)) return;
+  try {
+    const parts = await CHAT().download(t, a, (p) => {
+      if (viewing && viewing.m === m && p < 1) $('viewerNote').textContent = `Carregando ${Math.round(p * 100)}%…`;
+    });
+    const url = `data:${a.mime || 'image/webp'};base64,${parts.join('')}`;
+    fullCache.set(a.fid, url);
+    while (fullCache.size > 12) fullCache.delete(fullCache.keys().next().value);
+    if (viewing && viewing.m === m) {
+      $('viewerImg').src = url;
+      $('viewerNote').textContent = `${a.w}×${a.h} · ${sizeLabel(a.size)}`;
+    }
+  } catch (err) {
+    if (viewing && viewing.m === m) $('viewerNote').textContent = 'Não consegui carregar a imagem inteira.';
+  }
+}
+function closeViewer() {
+  viewing = null;
+  $('viewer').classList.add('hidden');
+  $('viewerImg').removeAttribute('src');
+}
+
+// Anexos esperando para ir junto com a próxima mensagem.
+let tray = [];   // { file, kind: 'image' | 'file', preview, state: 'ready' | 'sending' | 'error', progress }
+let sendingChat = false;
+function clearTray() {
+  tray = [];
+  renderTray();
+}
+async function addFiles(list) {
+  if (!M.t) return;
+  for (const file of [...list]) {
+    if (tray.length >= 10) { toast('Dá para mandar até 10 anexos de uma vez.', 'warn'); break; }
+    const image = /^image\/(png|jpeg|webp|gif|bmp)$/.test(file.type);
+    if (!file.size) { toast(`“${file.name}” está vazio.`, 'warn'); continue; }
+    if (!image && file.size > FILE_MAX) { toast(`“${file.name}” tem ${sizeLabel(file.size)} — o máximo é 8 MB.`, 'err', 6000); continue; }
+    if (image && file.size > 40 * 1024 * 1024) { toast(`A imagem “${file.name}” é grande demais.`, 'err'); continue; }
+    const item = { file, kind: image ? 'image' : 'file', preview: '', state: 'ready', progress: 0 };
+    tray.push(item);
+    if (image) {
+      makeThumb(file, 160, 0.7).then((url) => { item.preview = url; renderTray(); }).catch(() => {});
+    }
+  }
+  renderTray();
+  $('msgInput').focus();
+}
+function renderTray() {
+  const box = $('attTray');
+  box.textContent = '';
+  box.classList.toggle('hidden', !tray.length);
+  for (const item of tray) {
+    const chip = document.createElement('div');
+    chip.className = 'att-chip' + (item.state === 'error' ? ' error' : '');
+    const th = document.createElement('div');
+    th.className = 'att-thumb';
+    if (item.preview) {
+      const img = document.createElement('img');
+      img.src = item.preview;
+      img.alt = '';
+      th.appendChild(img);
+    } else {
+      th.innerHTML = svg(ICON.file, 30);
+    }
+    const nm = document.createElement('div');
+    nm.className = 'att-name';
+    nm.textContent = item.file.name || 'imagem';
+    nm.title = nm.textContent;
+    const sz = document.createElement('div');
+    sz.className = 'att-size';
+    sz.textContent = item.state === 'sending' ? `Enviando ${Math.round(item.progress * 100)}%…`
+      : item.state === 'error' ? 'Não foi — tente de novo' : sizeLabel(item.file.size);
+    chip.append(th, nm, sz);
+    if (item.state === 'sending') {
+      const bar = document.createElement('div');
+      bar.className = 'att-bar';
+      bar.innerHTML = '<i></i>';
+      bar.firstChild.style.width = `${Math.round(item.progress * 100)}%`;
+      chip.appendChild(bar);
+    } else {
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'att-del';
+      del.title = 'Tirar';
+      del.innerHTML = svg(ICON.close, 13);
+      del.onclick = () => { tray = tray.filter((x) => x !== item); renderTray(); };
+      chip.appendChild(del);
+    }
+    box.appendChild(chip);
+  }
+}
+function pickFiles() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.multiple = true;
+  input.addEventListener('change', () => { if (input.files && input.files.length) addFiles(input.files); });
+  input.click();
+}
+
+// Desenha a imagem reduzida (lado maior = max) e devolve como data URL.
+async function makeThumb(file, max, quality) {
+  const bmp = await createImageBitmap(file);
+  try {
+    return drawSmall(bmp, max, 'image/webp', quality).toDataURL('image/webp', quality);
+  } finally {
+    bmp.close();
+  }
+}
+function drawSmall(bmp, max) {
+  const scale = Math.min(1, max / Math.max(bmp.width, bmp.height));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(bmp.width * scale));
+  canvas.height = Math.max(1, Math.round(bmp.height * scale));
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+  return canvas;
+}
+const canvasBlob = (canvas, type, q) => new Promise((resolve) => canvas.toBlob(resolve, type, q));
+function readDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result));
+    fr.onerror = () => reject(fr.error);
+    fr.readAsDataURL(blob);
+  });
+}
+// Arquivo → pedaços em base64 (cada um com o tamanho que o Firebase aceita).
+async function fileParts(blob) {
+  const size = CHAT().chunkBytes;
+  const parts = [];
+  for (let at = 0; at < blob.size; at += size) {
+    parts.push((await readDataUrl(blob.slice(at, at + size))).split(',')[1] || '');
+  }
+  return parts;
+}
+
+// Prepara e manda um anexo (a legenda vai junto na mesma mensagem).
+async function sendAttachment(t, item, caption) {
+  const file = item.file;
+  const onProgress = (p) => { item.progress = p; renderTray(); };
+  let att;
+  if (item.kind === 'image') {
+    const bmp = await createImageBitmap(file);
+    const w = bmp.width;
+    const h = bmp.height;
+    let thumb;
+    let full;
+    let mime;
+    try {
+      // Miniatura que aparece no chat (GIF pequeno continua animado).
+      thumb = file.type === 'image/gif' && file.size <= 56000 ? await readDataUrl(file) : '';
+      for (const [max, q] of [[480, 0.75], [400, 0.6], [320, 0.5]]) {
+        if (thumb) break;
+        const url = drawSmall(bmp, max).toDataURL('image/webp', q);
+        if (url.length <= 78000) thumb = url;
+      }
+      // Imagem inteira: GIF até 4 MB fica como está (anima); o resto vira WEBP de até 2048 px.
+      if (file.type === 'image/gif' && file.size <= 4 * 1024 * 1024) {
+        full = file;
+        mime = 'image/gif';
+      } else {
+        full = await canvasBlob(drawSmall(bmp, 2048), 'image/webp', 0.9);
+        mime = 'image/webp';
+      }
+    } finally {
+      bmp.close();
+    }
+    if (!thumb || !full) throw Object.assign(new Error('imagem'), { userMsg: `Não consegui preparar a imagem “${file.name}”.` });
+    if (full.size > FILE_MAX) throw Object.assign(new Error('grande'), { userMsg: `A imagem “${file.name}” ficou grande demais.` });
+    const base = (file.name || 'imagem').replace(/\.[^.]+$/, '') || 'imagem';
+    const name = (mime === 'image/gif' ? `${base}.gif` : `${base}.webp`).slice(0, 120);
+    const up = await CHAT().upload(t, await fileParts(full), onProgress);
+    att = { kind: 'image', name, size: full.size, mime, w, h, thumb, ...up };
+  } else {
+    const up = await CHAT().upload(t, await fileParts(file), onProgress);
+    att = {
+      kind: 'file', name: (file.name || 'arquivo').slice(0, 120), size: file.size,
+      mime: (file.type || '').slice(0, 100), ...up,
+    };
+  }
+  await CHAT().send(t, caption, att);
+}
+
 async function loadOlder() {
   if (!M.more || M.loading || !M.loaded || M.error) return;
   const all = allMessages().filter((m) => !m.pending);
   if (!all.length) return;
-  const { gid, cid } = M;
+  const { key, t } = M;
   M.loading = true;
   renderMessages('older');
   try {
-    const r = await GAPI().olderMessages(gid, cid, all[0]);
-    if (M.gid !== gid || M.cid !== cid) return;
+    const r = await CHAT().older(t, all[0]);
+    if (M.key !== key) return;
     M.older = [...r.list, ...M.older];
     M.more = r.more;
   } catch (err) {
     console.warn('[mensagens] antigas', err && err.code);
-    if (M.gid === gid && M.cid === cid) M.more = false;
+    if (M.key === key) M.more = false;
   } finally {
-    if (M.gid === gid && M.cid === cid) {
+    if (M.key === key) {
       M.loading = false;
       renderMessages('older');
     }
@@ -2218,33 +2621,237 @@ function sizeComposer() {
   ta.style.height = 'auto';
   ta.style.height = Math.min(ta.scrollHeight, 220) + 'px';
 }
-function sendChat() {
+async function sendChat() {
   const ta = $('msgInput');
   const text = ta.value;
-  if (!text.trim() || !M.cid) return;
-  const { gid, cid } = M;
+  const t = M.t;
+  if (!t || sendingChat || (!text.trim() && !tray.length)) return;
   ta.value = '';
   sizeComposer();
   M.atBottom = true;
-  GAPI().sendMessage(gid, cid, text).catch((err) => {
-    toast(groupErr(err, 'Não consegui mandar a mensagem'), 'err');
-    if (!ta.value && M.cid === cid) { ta.value = text; sizeComposer(); }
-  });
+  if (!tray.length) {
+    CHAT().send(t, text).catch((err) => {
+      toast(groupErr(err, 'Não consegui mandar a mensagem'), 'err');
+      if (!ta.value && M.t === t) { ta.value = text; sizeComposer(); }
+    });
+    return;
+  }
+  // Com anexos: um por mensagem; a legenda vai com o primeiro.
+  sendingChat = true;
+  let caption = text;
+  for (const item of tray.slice()) {
+    if (M.t !== t) break;
+    item.state = 'sending';
+    item.progress = 0;
+    renderTray();
+    try {
+      await sendAttachment(t, item, caption);
+      caption = '';
+      tray = tray.filter((x) => x !== item);
+    } catch (err) {
+      console.warn('[anexo]', err);
+      item.state = 'error';
+      toast(err.userMsg || groupErr(err, `Não consegui mandar “${item.file.name}”`), 'err', 6000);
+    }
+    renderTray();
+  }
+  sendingChat = false;
+  if (caption && M.t === t && !ta.value) { ta.value = caption; sizeComposer(); }
 }
 async function deleteMessage(m, now) {
-  const { gid, cid } = M;
+  const t = M.t;
   if (!now) {
-    const ok = await ask({ title: 'Apagar mensagem?', text: 'Ela some para todo mundo do grupo.', ok: 'Apagar', danger: true });
+    const ok = await ask({
+      title: 'Apagar mensagem?',
+      text: t && t.did ? 'Ela some para vocês dois.' : 'Ela some para todo mundo do grupo.',
+      ok: 'Apagar',
+      danger: true,
+    });
     if (!ok) return;
   }
   try {
-    await GAPI().deleteMessage(gid, cid, m.id);
-    if (M.cid === cid) {
+    await CHAT().remove(t, m);
+    if (M.t === t) {
       M.older = M.older.filter((x) => x.id !== m.id);
       renderMessages();
     }
   } catch (err) {
     toast(groupErr(err, 'Não consegui apagar a mensagem'), 'err');
+  }
+}
+
+// ----- mensagens privadas -----
+const D = { list: new Map(), unsub: null, ready: false, marking: new Set() };
+const DMS = () => window.SPAuth.dms;
+// A outra pessoa da conversa: { uid, name }.
+function dmOther(d) {
+  const uid = d ? d.uids.find((u) => u !== G.uid) || '' : '';
+  return { uid, name: cleanName((d && d.names[uid]) || 'Alguém') };
+}
+const dmUnread = (d) => !!(d.last && d.last.uid !== G.uid && d.last.at > (d.read[G.uid] || 0));
+
+function startDms() {
+  stopDms();
+  D.unsub = DMS().watch(onDms, (err) => console.warn('[privadas]', err && err.code));
+}
+function stopDms() {
+  if (D.unsub) { try { D.unsub(); } catch {} }
+  Object.assign(D, { list: new Map(), unsub: null, ready: false, marking: new Set() });
+  renderUnread();
+}
+function onDms(list) {
+  const first = !D.ready;
+  const prev = D.list;
+  D.list = new Map(list.map((d) => [d.id, d]));
+  D.ready = true;
+  // Mensagem nova de alguém: som + aviso (se não estou olhando essa conversa agora).
+  for (const d of list) {
+    if (first || !dmUnread(d)) continue;
+    const old = prev.get(d.id);
+    if (old && old.last && old.last.at >= d.last.at) continue;
+    if (M.t && M.t.did === d.id && G.view === 'chat' && document.hasFocus()) continue;
+    sfx('message');
+    toast(`💬 ${dmOther(d).name}: ${d.last.text}`, '', 6000, () => openDm(d.id, true));
+  }
+  if (G.wantDm && D.list.has(G.wantDm)) {
+    const did = G.wantDm;
+    G.wantDm = '';
+    openDm(did, true);
+  }
+  if (M.t && M.t.did && G.view === 'chat' && document.hasFocus()) markDmRead(M.t.did);
+  renderUnread();
+  if (!G.gid) renderChannelList();
+  if (M.t && M.t.did) renderChatHead();
+}
+function markDmRead(did) {
+  const d = D.list.get(did);
+  if (!d || !dmUnread(d) || D.marking.has(did)) return;
+  D.marking.add(did);
+  DMS().markRead(did).catch(() => {}).finally(() => D.marking.delete(did));
+}
+// Bolinha vermelha no ícone do Início com quantas conversas têm mensagem nova.
+function renderUnread() {
+  const n = [...D.list.values()].filter(dmUnread).length;
+  $('homeBadge').textContent = n > 9 ? '9+' : String(n);
+  $('homeBadge').classList.toggle('hidden', !n);
+  document.title = n ? `(${n}) ScreenPLAY` : 'ScreenPLAY';
+}
+function openDm(did, focus) {
+  if (!D.list.has(did)) return false;
+  if (G.gid) closeGroup();
+  G.dm = did;
+  saveNav();
+  const t = { did };
+  if (M.key !== chatKey(t)) watchMessages(t);
+  renderRail();
+  renderGroupHead();
+  showView('chat');
+  renderChatHead();
+  if (focus) $('msgInput').focus();
+  markDmRead(did);
+  return true;
+}
+// Lista de conversas privadas (coluna da esquerda, no Início).
+function renderDmList(box) {
+  box.appendChild(chanSection('Mensagens privadas', '', null));
+  const list = [...D.list.values()]
+    .filter((d) => d.last || d.id === G.dm)
+    .sort((a, b) => (b.at || 0) - (a.at || 0));
+  if (!list.length) {
+    box.appendChild(chanNote('Para mandar uma mensagem privada, clique em alguém na lista de membros de um grupo.'));
+    return;
+  }
+  for (const d of list) {
+    const o = dmOther(d);
+    const el = document.createElement('div');
+    const active = G.view === 'chat' && M.t && M.t.did === d.id;
+    el.className = 'chan dm' + (active ? ' active' : '') + (dmUnread(d) ? ' unread' : '');
+    el.tabIndex = 0;
+    el.setAttribute('role', 'button');
+    const wrap = document.createElement('span');
+    wrap.className = 'av-wrap';
+    const av = document.createElement('span');
+    av.className = 'av';
+    paintAv(av, o.uid, o.name);
+    const dot = document.createElement('span');
+    dot.className = 'dot' + (isOnline(o.uid) ? ' on' : '');
+    wrap.append(av, dot);
+    const text = document.createElement('span');
+    text.className = 'dm-text';
+    const nm = document.createElement('span');
+    nm.className = 'dm-name ' + fxClass(o.uid);
+    nm.textContent = o.name;
+    const last = document.createElement('span');
+    last.className = 'dm-last';
+    last.textContent = d.last ? (d.last.uid === G.uid ? `Você: ${d.last.text}` : d.last.text) : '';
+    text.append(nm, last);
+    el.append(wrap, text);
+    if (dmUnread(d)) {
+      const u = document.createElement('span');
+      u.className = 'unread-dot';
+      el.appendChild(u);
+    }
+    el.onclick = () => openDm(d.id, true);
+    el.onkeydown = (e) => { if (e.key === 'Enter') openDm(d.id, true); };
+    box.appendChild(el);
+  }
+}
+
+// ----- cartão de perfil (clicar em alguém da lista de membros ou do chat) -----
+function openUserCard(uid, name, anchor, side) {
+  if (!uid) return;
+  const card = $('ucard');
+  const me = uid === G.uid;
+  const g = groupOf(G.gid);
+  paintAv($('ucAv'), uid, name);
+  $('ucName').textContent = name;
+  $('ucName').className = fxClass(uid);
+  $('ucCrown').classList.toggle('hidden', !(g && g.ownerUid === uid));
+  const st = g ? memberStatus(uid) : null;
+  const online = isOnline(uid) || !!st;
+  $('ucDot').className = 'dot' + (online ? ' on' : '');
+  $('ucStatus').textContent = st ? (st.live ? `Transmitindo em ${st.room}` : `Em ${st.room}`) : online ? 'Online' : 'Offline';
+  $('ucForm').classList.toggle('hidden', me);
+  $('ucEdit').classList.toggle('hidden', !me);
+  $('ucMsg').value = '';
+  $('ucMsg').disabled = false;
+  $('ucMsg').placeholder = `Mensagem para @${name}`;
+  card.dataset.uid = uid;
+  card.dataset.name = name;
+  card.classList.remove('hidden');
+  const r = anchor.getBoundingClientRect();
+  const w = card.offsetWidth;
+  const h = card.offsetHeight;
+  let x = side === 'left' ? r.left - w - 12 : r.right + 12;
+  if (x + w > innerWidth - 8) x = r.left - w - 12;
+  if (x < 8) x = Math.min(innerWidth - w - 8, r.right + 12);
+  card.style.left = `${Math.max(8, x)}px`;
+  card.style.top = `${Math.max(8, Math.min(r.top - 20, innerHeight - h - 8))}px`;
+  if (!me) setTimeout(() => $('ucMsg').focus(), 0);
+}
+function closeUserCard() {
+  $('ucard').classList.add('hidden');
+}
+const cardOpen = () => !$('ucard').classList.contains('hidden');
+async function sendFromCard(e) {
+  e.preventDefault();
+  const card = $('ucard');
+  const uid = card.dataset.uid;
+  const text = $('ucMsg').value.trim();
+  if (!uid || !text || $('ucMsg').disabled) return;
+  // Grupo em comum: o aberto agora (ou qualquer um que tenha nós dois).
+  const via = (groupOf(G.gid) && G.gid)
+    || ([...G.list.values()].find((g) => g.memberUids.includes(uid)) || {}).id || '';
+  $('ucMsg').disabled = true;
+  try {
+    const did = await DMS().ensure(uid, via);
+    await CHAT().send({ did }, text);
+    closeUserCard();
+    if (!openDm(did, true)) G.wantDm = did;   // a conversa nova ainda não chegou na lista
+  } catch (err) {
+    console.warn('[privadas]', err);
+    toast(groupErr(err, 'Não consegui mandar a mensagem'), 'err');
+    $('ucMsg').disabled = false;
   }
 }
 
@@ -2620,7 +3227,9 @@ $('dlgCancel').onclick = () => { if (dlg && !dlg.busy) closeDlg(null); };
 $('dlg').addEventListener('mousedown', (e) => { if (e.target === $('dlg') && dlg && !dlg.busy) closeDlg(null); });
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
-  if (menuOpen()) closeMenu();
+  if (!$('viewer').classList.contains('hidden')) closeViewer();
+  else if (cardOpen()) closeUserCard();
+  else if (menuOpen()) closeMenu();
   else if (dlg && !dlg.busy) closeDlg(null);
 });
 document.addEventListener('mousedown', (e) => {
@@ -2682,6 +3291,52 @@ $('msgInput').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendChat(); }
 });
 $('msgInput').addEventListener('input', sizeComposer);
+// Anexos: botão +, colar (Ctrl+V) e arrastar pra dentro do chat.
+$('attachBtn').onclick = pickFiles;
+$('msgInput').addEventListener('paste', (e) => {
+  const files = e.clipboardData ? [...e.clipboardData.files] : [];
+  if (!files.length) return;
+  e.preventDefault();
+  addFiles(files);
+});
+let dragDepth = 0;
+const dragHasFiles = (e) => e.dataTransfer && [...e.dataTransfer.types].includes('Files');
+$('chatView').addEventListener('dragenter', (e) => {
+  if (!dragHasFiles(e) || !M.t) return;
+  dragDepth++;
+  $('dropHint').classList.remove('hidden');
+});
+$('chatView').addEventListener('dragleave', () => {
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (!dragDepth) $('dropHint').classList.add('hidden');
+});
+$('chatView').addEventListener('drop', (e) => {
+  dragDepth = 0;
+  $('dropHint').classList.add('hidden');
+  if (dragHasFiles(e) && M.t) addFiles(e.dataTransfer.files);
+});
+// Soltar arquivo fora do chat não abre nada.
+document.addEventListener('dragover', (e) => e.preventDefault());
+document.addEventListener('drop', (e) => e.preventDefault());
+// Imagem aberta grande.
+$('viewerClose').onclick = closeViewer;
+$('viewer').addEventListener('mousedown', (e) => { if (e.target === $('viewer')) closeViewer(); });
+$('viewerSave').onclick = () => {
+  if (!viewing) return;
+  const { m, t } = viewing;
+  const url = fullCache.get(m.att.fid);
+  if (url) saveBytes(m.att.name, partsToBytes([url.split(',')[1]]));
+  else saveAttachment(t, m.att, $('viewerSave'));
+};
+// Cartão de perfil.
+$('ucForm').addEventListener('submit', sendFromCard);
+$('ucEdit').onclick = () => { closeUserCard(); openSettings('perfil'); };
+document.addEventListener('mousedown', (e) => {
+  if (cardOpen() && !$('ucard').contains(e.target)) closeUserCard();
+}, true);
+window.addEventListener('focus', () => {
+  if (M.t && M.t.did && G.view === 'chat') markDmRead(M.t.did);
+});
 $('composer').addEventListener('submit', (e) => { e.preventDefault(); sendChat(); });
 $('msgList').addEventListener('scroll', () => {
   const box = $('msgList');
@@ -2737,7 +3392,8 @@ function profilesChanged() {
   PF.raf = requestAnimationFrame(() => {
     PF.raf = 0;
     paintMe();
-    if (M.cid && M.loaded) renderMessages();
+    if (M.t && M.loaded) renderMessages();
+    if (M.t && M.t.did) renderChatHead();
     if (S.entered) renderPeople();
     renderChannels();
   });
@@ -2897,6 +3553,7 @@ function renderMembersSoon() {
   PR.raf = requestAnimationFrame(() => {
     PR.raf = 0;
     renderMembers();
+    if (!G.gid) renderChannelList();
   });
 }
 // Fechando a janela: sai da sala, avisa que ficou offline e libera o fechamento.
