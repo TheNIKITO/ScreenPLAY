@@ -34,6 +34,16 @@ service cloud.firestore {
         && d.at == request.time
         && ((('att' in d) && validAtt(d.att)) || (!('att' in d) && d.text.size() >= 1));
     }
+    // Reação numa mensagem: só muda o campo r, e só a minha parte dele (lista de emojis conhecidos).
+    function reactOnly() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['r'])
+        && request.resource.data.r is map
+        && request.resource.data.r.diff(resource.data.get('r', {})).affectedKeys().hasOnly([request.auth.uid])
+        && (!(request.auth.uid in request.resource.data.r)
+          || (request.resource.data.r[request.auth.uid] is list
+            && request.resource.data.r[request.auth.uid].size() <= 8
+            && request.resource.data.r[request.auth.uid].hasOnly(['👍', '❤️', '😂', '😮', '😢', '🔥', '🎉', '👀'])));
+    }
     // Anexo guardado em pedaços: a ficha diz de quem é e quantos pedaços tem.
     function validFileMeta(d) {
       return d.keys().hasOnly(['uid', 'chunks']) && d.uid == request.auth.uid
@@ -168,6 +178,7 @@ service cloud.firestore {
           allow create: if isMemberOf(gid)
             && get(/databases/$(database)/documents/groups/$(gid)/channels/$(cid)).data.type == 'text'
             && validMsg(request.resource.data);
+          allow update: if isMemberOf(gid) && reactOnly();
           allow delete: if signedIn() && (resource.data.uid == request.auth.uid || isOwnerOf(gid));
         }
       }
@@ -197,6 +208,21 @@ service cloud.firestore {
           && request.resource.data.by == request.auth.uid;
         allow delete: if isOwnerOf(gid);
       }
+    }
+
+    // Menções: quem marca alguém (@nick) num canal deixa um aviso na caixa da pessoa.
+    // Os dois precisam ser do grupo; só o dono da caixa lê e apaga.
+    match /pings/{uid}/items/{pid} {
+      allow read, delete: if signedIn() && request.auth.uid == uid;
+      allow create: if signedIn() && request.auth.uid != uid
+        && request.resource.data.keys().hasOnly(['from', 'name', 'gid', 'cid', 'ch', 'text', 'at'])
+        && request.resource.data.from == request.auth.uid
+        && request.resource.data.name == myName()
+        && request.resource.data.gid is string && request.resource.data.cid is string
+        && validName(request.resource.data.ch, 30)
+        && request.resource.data.text is string && request.resource.data.text.size() <= 200
+        && request.resource.data.at == request.time
+        && groupOf(request.resource.data.gid).memberUids.hasAll([request.auth.uid, uid]);
     }
 
     // Mensagem privada entre duas pessoas que estão num mesmo grupo. ID = uidA_uidB (em ordem).
@@ -234,6 +260,7 @@ service cloud.firestore {
         allow create: if signedIn()
           && request.auth.uid in getAfter(/databases/$(database)/documents/dms/$(did)).data.uids
           && validMsg(request.resource.data);
+        allow update: if inDm() && reactOnly();
         allow delete: if signedIn() && resource.data.uid == request.auth.uid;
       }
       match /files/{fid} {

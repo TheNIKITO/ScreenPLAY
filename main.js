@@ -5,6 +5,7 @@ const os = require('os');
 const path = require('path');
 const { autoUpdater } = require('electron-updater');
 const presence = require('./discord');
+const { linkPreview } = require('./link-preview');
 
 // Permite abrir duas cópias separadas no mesmo PC (útil para testar): TAV_PROFILE=b
 if (process.env.TAV_PROFILE) {
@@ -318,6 +319,8 @@ function registerIpc() {
       if (url.protocol === 'http:' || url.protocol === 'https:') shell.openExternal(url.href);
     } catch { /* link inválido: ignora */ }
   });
+  // Prévia de um link do chat (título, descrição, miniatura).
+  ipcMain.handle('tav:link-preview', (_e, raw) => linkPreview(String(raw || '')));
   // Salvar um anexo do chat: pergunta onde (começa em Downloads) e grava.
   ipcMain.handle('tav:save-file', async (_e, name, data) => {
     const safe = path.basename(String(name || 'arquivo')).replace(/[<>:"|?*\u0000-\u001f]/g, '_').trim().slice(0, 150) || 'arquivo';

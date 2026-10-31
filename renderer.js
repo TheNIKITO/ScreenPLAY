@@ -20,7 +20,8 @@ const REACTIONS = ['😂', '🔥', '👍', '😮', '❤️'];
 const ALIVE_EVERY = 5000;
 const ROOM_SILENCE = 20000;
 const ICON = {
-  vol:    '<path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M19 5a10 10 0 0 1 0 14"/>',
+  smile:  '<circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2M9 9h.01M15 9h.01"/>',
+  vol:   '<path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M19 5a10 10 0 0 1 0 14"/>',
   mute:   '<path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="m22 9-6 6M16 9l6 6"/>',
   fs:     '<path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/>',
   close:  '<path d="M18 6 6 18M6 6l12 12"/>',
@@ -77,6 +78,7 @@ const S = {
   watching: new Map(),    // id -> seq das transmissões que EU escolhi assistir
   encoder: 'gpu',         // escolha: 'gpu' (placa de vídeo, H.264) | 'cpu' (processador, VP8)
   encoderUsed: null,      // o que o navegador realmente está usando: 'gpu' | 'cpu'
+  encoderCodec: '',       // e com qual codec: 'HEVC' | 'H.264' | 'VP8'
   hw: { cpu: '', gpu: '' },   // marcas detectadas (Intel / AMD / NVIDIA)
   pings: new Map(),       // id -> ping em ms (conexões diretas que eu tenho com cada pessoa)
   since: { room: 0, share: 0, watch: 0 },   // quando entrei / comecei a transmitir / a assistir (Discord)
@@ -110,7 +112,12 @@ function store(key, val) {
 function toast(text, kind = '', ms = 4000, onClick) {
   const el = document.createElement('div');
   el.className = 'toast ' + kind + (onClick ? ' click' : '');
-  el.textContent = text;
+  if (kind === 'msg') {
+    el.title = text;
+    el.appendChild(document.createElement('span')).textContent = text;
+  } else {
+    el.textContent = text;
+  }
   if (onClick) el.onclick = () => { el.remove(); onClick(); };
   $('toasts').appendChild(el);
   setTimeout(() => el.remove(), ms);
@@ -252,18 +259,20 @@ function announceViewer(id) {
 // Ajusta a negociação (SDP) de cada conexão:
 //  - som estéreo e com mais qualidade no Opus (o padrão do WebRTC é pensado pra voz);
 //  - vídeo começa já com banda alta (senão os primeiros segundos ficam borrados);
-//  - quem transmite escolhe o codificador: 'gpu' prefere H.264, que no Windows é codificado pela
-//    placa de vídeo (NVIDIA/AMD/Intel); 'cpu' prefere VP8, codificado pelo processador.
+//  - quem transmite escolhe o codificador: 'gpu' prefere HEVC (H.265) e depois H.264, codificados pela
+//    placa de vídeo (NVIDIA/AMD/Intel); 'cpu' prefere VP8, codificado pelo processador. O H.264 da placa
+//    a 60 fps sai em rajadas (quem assiste descarta quadros e acumula atraso); o HEVC não. Se quem
+//    assiste não decodifica HEVC, a resposta dele não traz o H265 e fica o H.264.
 //    Quem assiste não reordena nada (a resposta segue a ordem de quem transmite).
 const VIDEO_BITRATES = 'x-google-start-bitrate=3000;x-google-min-bitrate=1000;x-google-max-bitrate=25000';
 function tuneSdp(sdp, encoder) {
   const lines = sdp.split('\r\n');
   const videoPts = new Set();
-  const byCodec = { VP8: [], VP9: [], H264: [], AV1: [] };
+  const byCodec = { VP8: [], VP9: [], H264: [], H265: [], AV1: [] };
   let section = '';
   for (const l of lines) {
     if (l.startsWith('m=')) section = l.slice(2, l.indexOf(' '));
-    const m = /^a=rtpmap:(\d+) (VP8|VP9|H264|AV1)\//i.exec(l);
+    const m = /^a=rtpmap:(\d+) (VP8|VP9|H264|H265|AV1)\//i.exec(l);
     if (m && section === 'video') {
       videoPts.add(m[1]);
       byCodec[m[2].toUpperCase()].push(m[1]);
@@ -273,10 +282,10 @@ function tuneSdp(sdp, encoder) {
   const opus = (/a=rtpmap:(\d+) opus\/48000\/2/i.exec(sdp) || [])[1];
   let preferred = [];
   if (encoder === 'gpu') {
-    // H.264 "packetization-mode=1" primeiro (é o que a placa de vídeo usa).
+    // HEVC primeiro; depois H.264 "packetization-mode=1" (é o que a placa de vídeo usa).
     const h264 = byCodec.H264;
     const pm1 = h264.filter((pt) => lines.some((l) => l.startsWith(`a=fmtp:${pt} `) && l.includes('packetization-mode=1')));
-    preferred = [...pm1, ...h264.filter((pt) => !pm1.includes(pt))];
+    preferred = [...byCodec.H265, ...pm1, ...h264.filter((pt) => !pm1.includes(pt))];
   } else if (encoder === 'cpu') {
     preferred = byCodec.VP8;
   }
@@ -839,8 +848,8 @@ function renderShareUI() {
       loopback: 'som do PC inteiro',
     }[S.audioMode] || 'sem som';
     const enc = {
-      gpu: ` · H.264 na placa${S.hw.gpu ? ' ' + S.hw.gpu : ' de vídeo'}`,
-      cpu: ` · VP8 no processador${S.hw.cpu ? ' ' + S.hw.cpu : ''}`,
+      gpu: ` · ${S.encoderCodec || 'H.264'} na placa${S.hw.gpu ? ' ' + S.hw.gpu : ' de vídeo'}`,
+      cpu: ` · ${S.encoderCodec || 'VP8'} no processador${S.hw.cpu ? ' ' + S.hw.cpu : ''}`,
     }[S.encoderUsed] || '';
     hint.textContent = `● Ao vivo · ${n} assistindo`;
     hint.title = `Ao vivo · ${n} ${n === 1 ? 'pessoa assistindo' : 'pessoas assistindo'} · ${som}${enc}`;
@@ -1222,6 +1231,7 @@ async function startShare() {
   S.quality = q;
   S.encoder = prefs.encoder;
   S.encoderUsed = null;
+  S.encoderCodec = '';
   S.seq += 1;
   S.since.share = Date.now();
   S.wanted = new Set();
@@ -1241,6 +1251,7 @@ function stopShare(silent) {
   AppAudio.stop();
   S.audioMode = 'none';
   S.encoderUsed = null;
+  S.encoderCodec = '';
   S.wanted = new Set();
   S.watchers = new Set();
   for (const id of [...S.outCalls.keys()]) closeOut(id);
@@ -1313,6 +1324,8 @@ async function detectEncoder(pc, seq) {
       if (r.type !== 'outbound-rtp' || r.kind !== 'video' || !r.encoderImplementation) return;
       const hw = r.powerEfficientEncoder === true || /MediaFoundation|NVIDIA|AMD|Intel|QuickSync/i.test(r.encoderImplementation);
       S.encoderUsed = hw ? 'gpu' : 'cpu';
+      const codec = r.codecId && stats.get(r.codecId);
+      S.encoderCodec = { 'video/H265': 'HEVC', 'video/H264': 'H.264', 'video/VP8': 'VP8', 'video/VP9': 'VP9', 'video/AV1': 'AV1' }[codec && codec.mimeType] || '';
     });
   } catch { return; }
   if (S.encoder === 'gpu' && S.encoderUsed === 'cpu') {
@@ -1498,10 +1511,38 @@ function removeTile(id) {
   renderStage();
 }
 
+// O codificador só vale depois de "Aplicar" (assim fica claro que mudou).
+function markEncoderApply() {
+  const pending = $('setEncoder').value !== sharePrefs().encoder;
+  const btn = $('setEncoderApply');
+  btn.disabled = !pending;
+  btn.classList.toggle('primary', pending);
+  btn.textContent = pending ? 'Aplicar' : 'Aplicado ✓';
+}
+
+function applyEncoder() {
+  const encoder = $('setEncoder').value === 'cpu' ? 'cpu' : 'gpu';
+  store('tav-encoder', encoder);
+  markEncoderApply();
+  const name = encoder === 'gpu' ? `placa de vídeo${S.hw.gpu ? ' ' + S.hw.gpu : ''}` : `processador${S.hw.cpu ? ' ' + S.hw.cpu : ''}`;
+  if (S.localStream && S.encoder !== encoder) {
+    // Já transmitindo: reconecta quem está assistindo com o novo codificador.
+    S.encoder = encoder;
+    S.encoderUsed = null;
+    S.encoderCodec = '';
+    for (const id of [...S.outCalls.keys()]) closeOut(id);
+    syncCalls();
+    renderShareUI();
+    toast(`Codificador aplicado: ${name}. Reconectando quem está assistindo…`, 'ok');
+  } else {
+    toast(`Codificador aplicado: ${name}. Vale na próxima vez que você transmitir.`, 'ok');
+  }
+}
+
 // ---------------- marca do processador e da placa de vídeo ----------------
 function labelEncoders() {
   for (const o of $('setEncoder').options) {
-    if (o.value === 'gpu') o.textContent = S.hw.gpu ? `H.264 · Placa ${S.hw.gpu}` : 'H.264 · Placa de vídeo';
+    if (o.value === 'gpu') o.textContent = S.hw.gpu ? `HEVC / H.264 · Placa ${S.hw.gpu}` : 'HEVC / H.264 · Placa de vídeo';
     if (o.value === 'cpu') o.textContent = S.hw.cpu ? `VP8 · Processador ${S.hw.cpu}` : 'VP8 · Processador';
   }
 }
@@ -1579,6 +1620,7 @@ function startGroups(uid) {
   stopGroups();
   G.uid = uid;
   startDms();
+  startPings();
   G.unsub = GAPI().watchGroups(onGroups, (err) => {
     G.ready = true;
     G.error = groupErr(err, 'Não consegui carregar seus grupos');
@@ -1591,6 +1633,7 @@ function stopGroups() {
   closeGroup();
   stopMessages();
   stopDms();
+  stopPings();
   Object.assign(G, { uid: '', list: new Map(), ready: false, unsub: null, error: '', goneOk: new Set(), synced: new Set(), wantGid: '', dm: '', wantDm: '' });
 }
 // Para de ouvir o grupo aberto.
@@ -1786,6 +1829,14 @@ function renderRail() {
     b.onclick = () => openGroup(g.id);
     b.oncontextmenu = (e) => { e.preventDefault(); groupMenu(g.id, e.clientX, e.clientY); };
     item.appendChild(b);
+    const pings = pingCount(g.id);
+    if (pings) {
+      const badge = document.createElement('span');
+      badge.className = 'badge';
+      badge.textContent = pings > 9 ? '9+' : String(pings);
+      badge.title = 'Marcaram você neste grupo';
+      item.appendChild(badge);
+    }
     if (S.group && S.group.gid === g.id) {
       const dot = document.createElement('span');
       dot.className = 'here-dot';
@@ -1869,6 +1920,15 @@ function chanEl(ch, owner) {
   el.setAttribute('role', 'button');
   el.innerHTML = `<span class="cico">${svg(text ? ICON.hash : ICON.screen, 18)}</span><span class="cname"></span>`;
   el.querySelector('.cname').textContent = ch.name;
+  const pings = text ? pingCount(G.gid, ch.id) : 0;
+  if (pings) {
+    el.classList.add('pinged');
+    const b = document.createElement('span');
+    b.className = 'ping-badge';
+    b.textContent = pings > 9 ? '@9+' : `@${pings}`;
+    b.title = pings === 1 ? 'Alguém marcou você aqui' : `Marcaram você ${pings} vezes aqui`;
+    el.appendChild(b);
+  }
   el.title = text ? `#${ch.name}` : here ? ch.name : `${ch.name} — clique para entrar`;
   if (owner) {
     const more = document.createElement('button');
@@ -2090,6 +2150,8 @@ function openChat(cid, focus) {
   showView('chat');
   renderChatHead();
   if (focus) $('msgInput').focus();
+  clearViewedPings();
+  renderRail();
   return true;
 }
 function renderChatHead() {
@@ -2279,7 +2341,7 @@ function messageEl(m, first, owner) {
   if (m.text) {
     const txt = document.createElement('div');
     txt.className = 'mtext';
-    richText(txt, m.text);
+    richText(txt, m.text, M.t && M.t.gid ? groupNicks(M.t.gid) : []);
     el.appendChild(txt);
   }
   if (m.att) {
@@ -2288,34 +2350,77 @@ function messageEl(m, first, owner) {
     box.appendChild(attEl(m));
     el.appendChild(box);
   }
-  if (!m.pending && (m.uid === G.uid || owner)) {
-    const del = document.createElement('button');
-    del.type = 'button';
-    del.className = 'mdel';
-    del.title = 'Apagar mensagem (Shift + clique apaga sem perguntar)';
-    del.setAttribute('aria-label', 'Apagar mensagem');
-    del.innerHTML = svg(ICON.trash, 15);
-    del.onclick = (e) => deleteMessage(m, e.shiftKey);
-    el.appendChild(del);
+  const link = m.text && !m.att && previewsOn() ? firstLink(m.text) : '';
+  if (link) el.appendChild(previewSlot(link));
+  if (Object.keys(m.r || {}).length) el.appendChild(reactsEl(m));
+  // Alguém me marcou (@meu nick): a mensagem fica destacada.
+  if (M.t && M.t.gid && m.uid !== G.uid && findMentions(m.text, groupNicks(M.t.gid)).some((x) => x.uid === G.uid)) {
+    el.classList.add('mention-me');
+  }
+  if (!m.pending) {
+    const tools = document.createElement('div');
+    tools.className = 'mtools';
+    const react = document.createElement('button');
+    react.type = 'button';
+    react.className = 'mtool';
+    react.title = 'Reagir';
+    react.setAttribute('aria-label', 'Reagir');
+    react.innerHTML = svg(ICON.smile, 16);
+    react.onclick = (e) => { e.stopPropagation(); openReactPick(m, react); };
+    tools.appendChild(react);
+    if (m.uid === G.uid || owner) {
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'mtool';
+      del.title = 'Apagar mensagem (Shift + clique apaga sem perguntar)';
+      del.setAttribute('aria-label', 'Apagar mensagem');
+      del.innerHTML = svg(ICON.trash, 15);
+      del.onclick = (e) => deleteMessage(m, e.shiftKey);
+      tools.appendChild(del);
+    }
+    el.appendChild(tools);
   }
   return el;
 }
 
-// Links viram clicáveis (abrem no navegador).
+// Links viram clicáveis (abrem no navegador) e @nick de quem é do grupo fica destacado.
 const URL_RE = /\b(?:https?:\/\/|www\.)[^\s<>"]+/gi;
-function richText(el, text) {
+// Pontuação no fim não faz parte do link ("veja www.site.com." → sem o ponto), nem um ")" que fecha a frase.
+function trimUrl(url) {
+  const count = (ch) => url.split(ch).length - 1;
+  for (let prev = ''; prev !== url;) {
+    prev = url;
+    url = url.replace(/[.,!?;:'"]+$/, '');
+    if (url.endsWith(')') && count(')') > count('(')) url = url.slice(0, -1);
+  }
+  return url;
+}
+const fullUrl = (url) => (/^https?:\/\//i.test(url) ? url : `https://${url}`);
+function firstLink(text) {
+  const found = URL_RE.exec(text);
+  URL_RE.lastIndex = 0;
+  return found ? fullUrl(trimUrl(found[0])) : '';
+}
+// Texto comum, com as menções viradas em destaque.
+function plainText(el, text, nicks) {
+  let last = 0;
+  for (const mt of findMentions(text, nicks)) {
+    if (mt.at > last) el.append(text.slice(last, mt.at));
+    const span = document.createElement('span');
+    span.className = 'mention' + (mt.uid === G.uid ? ' me' : '');
+    span.textContent = text.slice(mt.at, mt.at + mt.len);
+    span.onclick = () => openUserCard(mt.uid, mt.name, span, 'right');
+    el.appendChild(span);
+    last = mt.at + mt.len;
+  }
+  if (last < text.length) el.append(text.slice(last));
+}
+function richText(el, text, nicks = []) {
   let last = 0;
   for (const found of text.matchAll(URL_RE)) {
-    let url = found[0];
-    // Pontuação no fim não faz parte do link ("veja www.site.com." → sem o ponto), nem um ")" que fecha a frase.
-    const count = (ch) => url.split(ch).length - 1;
-    for (let prev = ''; prev !== url;) {
-      prev = url;
-      url = url.replace(/[.,!?;:'"]+$/, '');
-      if (url.endsWith(')') && count(')') > count('(')) url = url.slice(0, -1);
-    }
-    if (found.index > last) el.append(text.slice(last, found.index));
-    const href = /^https?:\/\//i.test(url) ? url : `https://${url}`;
+    const url = trimUrl(found[0]);
+    if (found.index > last) plainText(el, text.slice(last, found.index), nicks);
+    const href = fullUrl(url);
     const a = document.createElement('a');
     a.className = 'mlink';
     a.href = href;
@@ -2325,7 +2430,7 @@ function richText(el, text) {
     el.appendChild(a);
     last = found.index + url.length;
   }
-  if (last < text.length) el.append(text.slice(last));
+  if (last < text.length) plainText(el, text.slice(last), nicks);
 }
 function openLink(url) {
   if (IS_APP && window.tav.openLink) window.tav.openLink(url);
@@ -2628,9 +2733,10 @@ async function sendChat() {
   if (!t || sendingChat || (!text.trim() && !tray.length)) return;
   ta.value = '';
   sizeComposer();
+  closeMentionPop();
   M.atBottom = true;
   if (!tray.length) {
-    CHAT().send(t, text).catch((err) => {
+    CHAT().send(t, text).then(() => notifyMentions(t, text), (err) => {
       toast(groupErr(err, 'Não consegui mandar a mensagem'), 'err');
       if (!ta.value && M.t === t) { ta.value = text; sizeComposer(); }
     });
@@ -2646,6 +2752,7 @@ async function sendChat() {
     renderTray();
     try {
       await sendAttachment(t, item, caption);
+      notifyMentions(t, caption);
       caption = '';
       tray = tray.filter((x) => x !== item);
     } catch (err) {
@@ -2680,8 +2787,294 @@ async function deleteMessage(m, now) {
   }
 }
 
+// ----- menções (@nick) -----
+// Nicks de quem é do grupo, os mais longos primeiro ("@Ana Clara" ganha de "@Ana").
+const nickCache = { members: null, list: [] };
+function groupNicks(gid) {
+  const g = groupOf(gid);
+  if (!g) return [];
+  if (nickCache.members !== g.members) {
+    nickCache.members = g.members;
+    nickCache.list = Object.entries(g.members)
+      .map(([uid, mb]) => ({ uid, name: cleanName(mb && mb.name), low: cleanName(mb && mb.name).toLowerCase() }))
+      .sort((a, b) => b.name.length - a.name.length);
+  }
+  return nickCache.list;
+}
+const WORD_CH = /[A-Za-zÀ-ÖØ-öø-ÿ0-9_]/;
+// Acha "@nick" de membros no texto: [{ at, len, uid, name }].
+function findMentions(text, nicks) {
+  const out = [];
+  if (!text || !nicks.length || !text.includes('@')) return out;
+  const low = text.toLowerCase();
+  for (let i = low.indexOf('@'); i !== -1; i = low.indexOf('@', i + 1)) {
+    if (i > 0 && WORD_CH.test(text[i - 1])) continue;   // e-mail (fulano@site.com)
+    const hit = nicks.find((n) => low.startsWith(n.low, i + 1) && !WORD_CH.test(text[i + 1 + n.name.length] || ''));
+    if (!hit) continue;
+    out.push({ at: i, len: hit.name.length + 1, uid: hit.uid, name: hit.name });
+    i += hit.name.length;
+  }
+  return out;
+}
+// Mandei uma mensagem num canal: avisa quem eu marquei.
+function notifyMentions(t, text) {
+  if (!t || !t.gid || !text) return;
+  const uids = findMentions(text, groupNicks(t.gid)).map((x) => x.uid).filter((u) => u !== G.uid);
+  if (!uids.length) return;
+  const ch = (G.channels || []).find((c) => c.id === t.cid);
+  window.SPAuth.pings.send(t.gid, t.cid, ch ? ch.name : 'canal', text, uids)
+    .catch((err) => console.warn('[menções]', err && err.code));
+}
+
+// Minhas menções (de todos os grupos), ao vivo: aviso + "@" no canal e no grupo até eu abrir o canal.
+const P = { list: [], unsub: null, ready: false, clearing: new Set() };
+function startPings() {
+  stopPings();
+  P.unsub = window.SPAuth.pings.watch(onPings, (err) => console.warn('[menções]', err && err.code));
+}
+function stopPings() {
+  if (P.unsub) { try { P.unsub(); } catch {} }
+  Object.assign(P, { list: [], unsub: null, ready: false, clearing: new Set() });
+}
+const viewingChannel = (gid, cid) => G.view === 'chat' && !!M.t && M.t.gid === gid && M.t.cid === cid;
+function onPings(list) {
+  const first = !P.ready;
+  const old = new Set(P.list.map((p) => p.id));
+  P.list = list;
+  P.ready = true;
+  const gone = list.filter((p) => G.ready && !G.list.has(p.gid));   // de grupo que eu saí
+  if (gone.length) clearPingIds(gone.map((p) => p.id));
+  for (const p of list) {
+    if (first || old.has(p.id) || !G.list.has(p.gid)) continue;
+    if (viewingChannel(p.gid, p.cid) && document.hasFocus()) continue;   // já estou vendo: some sozinho
+    sfx('message');
+    toast(`@ ${cleanName(p.name)} marcou você em #${p.ch}: ${p.text}`, 'msg', 7000, () => goToPing(p));
+  }
+  clearViewedPings();
+  renderRail();
+  if (G.gid) renderChannelList();
+}
+function clearPingIds(ids) {
+  const todo = ids.filter((id) => !P.clearing.has(id));
+  if (!todo.length) return;
+  todo.forEach((id) => P.clearing.add(id));
+  window.SPAuth.pings.clear(todo).catch(() => todo.forEach((id) => P.clearing.delete(id)));
+}
+// Estou com o canal aberto (e olhando a janela): as menções dele já foram vistas.
+function clearViewedPings() {
+  if (!M.t || !M.t.gid || G.view !== 'chat' || !document.hasFocus()) return;
+  clearPingIds(P.list.filter((p) => p.gid === M.t.gid && p.cid === M.t.cid).map((p) => p.id));
+}
+const pingCount = (gid, cid) => P.list.filter((p) => p.gid === gid && (!cid || p.cid === cid) && !P.clearing.has(p.id)).length;
+function goToPing(p) {
+  if (!G.list.has(p.gid)) return;
+  if (G.gid !== p.gid) openGroup(p.gid);
+  if (!openChat(p.cid, true)) G.wantCid = p.cid;   // canais ainda chegando
+}
+
+// ----- reações nas mensagens -----
+function reactsEl(m) {
+  const box = document.createElement('div');
+  box.className = 'mreacts';
+  const by = new Map();   // emoji -> [uid]
+  for (const [uid, list] of Object.entries(m.r || {})) {
+    for (const e of list) by.set(e, [...(by.get(e) || []), uid]);
+  }
+  for (const e of CHAT().reactions || []) {
+    const uids = by.get(e);
+    if (!uids || !uids.length) continue;
+    const mine = uids.includes(G.uid);
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'mreact' + (mine ? ' mine' : '');
+    b.innerHTML = '<span class="re"></span><span class="rn"></span>';
+    b.querySelector('.re').textContent = e;
+    b.querySelector('.rn').textContent = String(uids.length);
+    const names = uids.map((u) => (u === G.uid ? 'Você' : reactorName(u)));
+    b.title = `${names.join(', ')} ${uids.length === 1 && !mine ? 'reagiu' : 'reagiram'} com ${e}`;
+    b.onclick = () => toggleReact(m, e);
+    box.appendChild(b);
+  }
+  const add = document.createElement('button');
+  add.type = 'button';
+  add.className = 'mreact add';
+  add.title = 'Reagir';
+  add.setAttribute('aria-label', 'Reagir');
+  add.innerHTML = svg(ICON.smile, 15);
+  add.onclick = (e) => { e.stopPropagation(); openReactPick(m, add); };
+  box.appendChild(add);
+  return box;
+}
+function reactorName(uid) {
+  if (M.t && M.t.did) return cleanName((D.list.get(M.t.did) || { names: {} }).names[uid] || 'Alguém');
+  const g = M.t && groupOf(M.t.gid);
+  return cleanName((g && g.members[uid] && g.members[uid].name) || 'Alguém');
+}
+function toggleReact(m, emoji) {
+  const t = M.t;
+  if (!t) return;
+  const mine = ((m.r || {})[G.uid] || []).includes(emoji);
+  CHAT().react(t, m.id, emoji, !mine).catch((err) => toast(groupErr(err, 'Não consegui reagir'), 'err'));
+}
+// Escolher a reação (fica em cima do botão que abriu).
+function openReactPick(m, anchor) {
+  const pick = $('reactPick');
+  pick.textContent = '';
+  for (const e of CHAT().reactions || []) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = e;
+    b.classList.toggle('mine', ((m.r || {})[G.uid] || []).includes(e));
+    b.onclick = () => { closeReactPick(); toggleReact(m, e); };
+    pick.appendChild(b);
+  }
+  pick.classList.remove('hidden');
+  const r = anchor.getBoundingClientRect();
+  const w = pick.offsetWidth;
+  const h = pick.offsetHeight;
+  pick.style.left = Math.max(8, Math.min(window.innerWidth - w - 8, r.right - w)) + 'px';
+  pick.style.top = (r.top - h - 6 >= 8 ? r.top - h - 6 : r.bottom + 6) + 'px';
+}
+function closeReactPick() { $('reactPick').classList.add('hidden'); }
+
+// ----- prévia de links -----
+const previewsOn = () => IS_APP && !!window.tav.linkPreview && store('tav-link-preview') !== '0';
+const PREV = new Map();   // url -> prévia | false (sem prévia) | null (buscando)
+function previewSlot(url) {
+  const box = document.createElement('div');
+  box.className = 'mprev';
+  box.dataset.url = url;
+  if (!PREV.has(url)) {
+    PREV.set(url, null);
+    while (PREV.size > 300) PREV.delete(PREV.keys().next().value);
+    window.tav.linkPreview(url).catch(() => null).then((p) => {
+      PREV.set(url, p || false);
+      if (!p) return;
+      const list = $('msgList');
+      const stick = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
+      for (const slot of list.querySelectorAll('.mprev')) {
+        if (slot.dataset.url === url && !slot.firstChild) fillPreview(slot, p);
+      }
+      if (stick) list.scrollTop = list.scrollHeight;
+    });
+  } else if (PREV.get(url)) {
+    fillPreview(box, PREV.get(url));
+  }
+  return box;
+}
+function fillPreview(box, p) {
+  const card = document.createElement('div');
+  card.className = 'lp' + (p.image && p.big ? ' big' : '');
+  const text = document.createElement('div');
+  text.className = 'lp-text';
+  if (p.site) {
+    const s = document.createElement('small');
+    s.textContent = p.site;
+    text.appendChild(s);
+  }
+  if (p.title) {
+    const a = document.createElement('a');
+    a.href = p.url;
+    a.title = p.url;
+    a.textContent = p.title;
+    a.onclick = (e) => { e.preventDefault(); openLink(p.url); };
+    text.appendChild(a);
+  }
+  if (p.desc) {
+    const d = document.createElement('p');
+    d.textContent = p.desc;
+    text.appendChild(d);
+  }
+  card.appendChild(text);
+  if (p.image && p.image.src) {
+    const img = document.createElement('img');
+    img.src = p.image.src;
+    img.alt = '';
+    img.draggable = false;
+    if (p.image.w && p.image.h) {
+      const scale = Math.min(1, (p.big ? 400 : 80) / p.image.w, (p.big ? 300 : 80) / p.image.h);
+      img.width = Math.round(p.image.w * scale);
+      img.height = Math.round(p.image.h * scale);
+    }
+    img.onclick = () => openLink(p.url);
+    card.appendChild(img);
+  }
+  box.appendChild(card);
+}
+
+// ----- @ no campo de mensagem: lista de membros para escolher -----
+const MP = { list: [], sel: 0, start: -1 };
+function mentionQuery() {
+  const ta = $('msgInput');
+  if (!M.t || !M.t.gid || ta.selectionStart !== ta.selectionEnd) return null;
+  const before = ta.value.slice(0, ta.selectionStart);
+  const mt = /(^|[^A-Za-zÀ-ÖØ-öø-ÿ0-9_])@([^@\n]{0,20})$/.exec(before);
+  return mt ? { start: before.length - mt[2].length - 1, q: mt[2].toLowerCase() } : null;
+}
+function updateMentionPop() {
+  const pop = $('mentionPop');
+  const mq = mentionQuery();
+  const list = mq ? groupNicks(M.t.gid).filter((n) => n.uid !== G.uid && n.low.startsWith(mq.q))
+    .sort((a, b) => a.name.localeCompare(b.name)).slice(0, 8) : [];
+  if (!list.length) { closeMentionPop(); return; }
+  const keep = MP.list[MP.sel] && list.findIndex((n) => n.uid === MP.list[MP.sel].uid);
+  Object.assign(MP, { list, sel: keep > 0 ? keep : 0, start: mq.start });
+  pop.textContent = '';
+  const head = document.createElement('div');
+  head.className = 'mp-head';
+  head.textContent = 'Membros';
+  pop.appendChild(head);
+  list.forEach((n, i) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'mp-item' + (i === MP.sel ? ' sel' : '');
+    const av = document.createElement('span');
+    av.className = 'av';
+    paintAv(av, n.uid, n.name);
+    const nm = document.createElement('span');
+    nm.textContent = n.name;
+    b.append(av, nm);
+    b.onmousedown = (e) => { e.preventDefault(); pickMention(i); };
+    pop.appendChild(b);
+  });
+  pop.classList.remove('hidden');
+}
+function closeMentionPop() {
+  $('mentionPop').classList.add('hidden');
+  MP.list = [];
+}
+function pickMention(i) {
+  const n = MP.list[i];
+  const ta = $('msgInput');
+  if (!n || MP.start < 0) return;
+  const after = ta.value.slice(ta.selectionStart);
+  const insert = `@${n.name} `;
+  ta.value = ta.value.slice(0, MP.start) + insert + after.replace(/^ /, '');
+  const pos = MP.start + insert.length;
+  ta.setSelectionRange(pos, pos);
+  closeMentionPop();
+  sizeComposer();
+  ta.focus();
+}
+// Setas, Enter/Tab e Esc com a lista aberta. Devolve true se usou a tecla.
+function mentionKey(e) {
+  if (!MP.list.length || $('mentionPop').classList.contains('hidden')) return false;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    MP.sel = (MP.sel + (e.key === 'ArrowDown' ? 1 : -1) + MP.list.length) % MP.list.length;
+    $('mentionPop').querySelectorAll('.mp-item').forEach((b, i) => b.classList.toggle('sel', i === MP.sel));
+  } else if (e.key === 'Enter' || e.key === 'Tab') {
+    pickMention(MP.sel);
+  } else if (e.key === 'Escape') {
+    closeMentionPop();
+  } else {
+    return false;
+  }
+  e.preventDefault();
+  return true;
+}
+
 // ----- mensagens privadas -----
-const D = { list: new Map(), unsub: null, ready: false, marking: new Set() };
+const D ={ list: new Map(), unsub: null, ready: false, marking: new Set() };
 const DMS = () => window.SPAuth.dms;
 // A outra pessoa da conversa: { uid, name }.
 function dmOther(d) {
@@ -2711,7 +3104,7 @@ function onDms(list) {
     if (old && old.last && old.last.at >= d.last.at) continue;
     if (M.t && M.t.did === d.id && G.view === 'chat' && document.hasFocus()) continue;
     sfx('message');
-    toast(`💬 ${dmOther(d).name}: ${d.last.text}`, '', 6000, () => openDm(d.id, true));
+    toast(`💬 ${dmOther(d).name}: ${d.last.text}`, 'msg', 6000, () => openDm(d.id, true));
   }
   if (G.wantDm && D.list.has(G.wantDm)) {
     const did = G.wantDm;
@@ -3288,9 +3681,18 @@ $('voiceShare').onclick = () => {
   else if (S.entered) startShare();
 };
 $('msgInput').addEventListener('keydown', (e) => {
+  if (mentionKey(e)) { e.stopPropagation(); return; }
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendChat(); }
 });
-$('msgInput').addEventListener('input', sizeComposer);
+$('msgInput').addEventListener('input', () => { sizeComposer(); updateMentionPop(); });
+$('msgInput').addEventListener('click', updateMentionPop);
+$('msgInput').addEventListener('keyup', (e) => { if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Home' || e.key === 'End') updateMentionPop(); });
+$('msgInput').addEventListener('blur', closeMentionPop);
+// Reações: a lista de emojis fecha ao clicar fora, rolar o chat ou apertar Esc.
+document.addEventListener('mousedown', (e) => { if (!$('reactPick').contains(e.target)) closeReactPick(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeReactPick(); });
+$('msgList').addEventListener('scroll', closeReactPick);
+window.addEventListener('focus', clearViewedPings);
 // Anexos: botão +, colar (Ctrl+V) e arrastar pra dentro do chat.
 $('attachBtn').onclick = pickFiles;
 $('msgInput').addEventListener('paste', (e) => {
@@ -3790,7 +4192,9 @@ async function fillSettings() {
   const prefs = sharePrefs();
   $('setQuality').value = prefs.quality;
   $('setEncoder').value = prefs.encoder;
+  markEncoderApply();
   $('setAudio').checked = prefs.audio;
+  $('setLinkPreview').checked = store('tav-link-preview') !== '0';
   const vol = Math.round(sfxVolume * 100);
   $('setSfxVol').value = vol;
   $('setSfxVolText').textContent = vol + '%';
@@ -3995,8 +4399,13 @@ $('settings').addEventListener('mousedown', (e) => { if (e.target === $('setting
 $('setName').addEventListener('change', applyName);
 $('setName').addEventListener('keydown', (e) => { if (e.key === 'Enter') e.target.blur(); });
 $('setQuality').addEventListener('change', (e) => store('tav-quality', e.target.value));
-$('setEncoder').addEventListener('change', (e) => store('tav-encoder', e.target.value));
+$('setEncoder').addEventListener('change', markEncoderApply);
+$('setEncoderApply').onclick = applyEncoder;
 $('setAudio').addEventListener('change', (e) => store('tav-audio', e.target.checked ? '1' : '0'));
+$('setLinkPreview').addEventListener('change', (e) => {
+  store('tav-link-preview', e.target.checked ? '1' : '0');
+  renderMessages();
+});
 $('setSfxVol').addEventListener('input', (e) => {
   sfxVolume = Number(e.target.value) / 100;
   store('tav-sfx-vol', String(e.target.value));

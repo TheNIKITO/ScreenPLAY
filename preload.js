@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld('tav', {
   checkUpdate: () => ipcRenderer.invoke('tav:check-update'),
   openReleases: () => ipcRenderer.send('tav:open-releases'),
   openLink: (url) => ipcRenderer.send('tav:open-link', String(url)),
+  linkPreview: (url) => ipcRenderer.invoke('tav:link-preview', String(url)),
   saveFile: (name, bytes) => ipcRenderer.invoke('tav:save-file', String(name), bytes),
   showFile: (file) => ipcRenderer.send('tav:show-file', String(file)),
   onSplash: (cb) => listen('tav:splash', cb),

@@ -1,7 +1,7 @@
 {
   "name": "screenplay",
   "productName": "ScreenPLAY",
-  "version": "1.6.1",
+  "version": "1.7.0",
   "description": "Transmita a tela do PC para seus amigos, com ou sem som (sem microfone).",
   "main": "main.js",
   "author": "ScreenPLAY",
@@ -37,6 +37,7 @@
       "splash.js",
       "pcm-worklet.js",
       "discord.js",
+      "link-preview.js",
       "theme-boot.js",
       "auth-bundle.js",
       "assets/**"

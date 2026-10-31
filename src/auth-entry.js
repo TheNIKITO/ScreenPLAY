@@ -9,10 +9,11 @@
 //   invites/{código}               -> { gid }   convite de um grupo
 //   groups/{gid}                   -> { name, photo, ownerUid, invite, memberUids, members: {uid: {name, via}}, createdAt }
 //     channels/{cid}               -> { name, type: 'text' | 'stream', pos }
-//       messages/{mid}             -> { uid, name, text, at, att? }   att = anexo (imagem ou arquivo)
+//       messages/{mid}             -> { uid, name, text, at, att?, r? }   att = anexo; r = reações {uid: [emoji]}
 //     files/{fid}                  -> { uid, chunks }   anexo guardado em pedaços: files/{fid}/chunks/{0..n} -> { d }
 //     rooms/{cid}                  -> { people: [{uid, name, live}], at, by }   quem está em cada sala
 //   dms/{uidA_uidB}                -> { uids, names, via, at, last, read }   mensagem privada (mesmas messages/ e files/)
+//   pings/{uid}/items/{pid}        -> { from, name, gid, cid, ch, text, at }   alguém me marcou (@nick) num canal
 // As regras de segurança (coladas no console do Firebase) só deixam cada um mexer na própria conta
 // e só o dono do grupo mexer nos canais.
 
@@ -241,10 +242,22 @@ function attFrom(a) {
   if (a.kind === 'file') return { kind: 'file', ...base };
   return null;
 }
+// Reações numa mensagem: { uid: ['😂', ...] } — só os emojis da lista (as regras conferem a mesma lista).
+const MSG_REACTS = ['👍', '❤️', '😂', '😮', '😢', '🔥', '🎉', '👀'];
+function reactsFrom(r) {
+  const out = {};
+  if (!r || typeof r !== 'object') return out;
+  for (const [uid, list] of Object.entries(r)) {
+    if (!Array.isArray(list)) continue;
+    const ok = list.filter((e) => MSG_REACTS.includes(e));
+    if (ok.length) out[uid] = ok;
+  }
+  return out;
+}
 function messageFrom(snap) {
   const d = snap.data({ serverTimestamps: 'estimate' });
   return {
-    id: snap.id, uid: d.uid || '', name: d.name || '', text: d.text || '', att: attFrom(d.att),
+    id: snap.id, uid: d.uid || '', name: d.name || '', text: d.text || '', att: attFrom(d.att), r: reactsFrom(d.r),
     at: millis(d.at) || Date.now(), pending: snap.metadata.hasPendingWrites, cursor: snap,
   };
 }
@@ -484,6 +497,13 @@ const Chat = {
     });
     await batch.commit();
   },
+  reactions: MSG_REACTS,
+  // Põe (on = true) ou tira a minha reação de uma mensagem.
+  async react(t, mid, emoji, on) {
+    const { uid } = whoAmI();
+    if (!MSG_REACTS.includes(emoji)) throw fail('react/invalid');
+    await updateDoc(doc(chatMsgs(t), mid), { [`r.${uid}`]: on ? arrayUnion(emoji) : arrayRemove(emoji) });
+  },
   async remove(t, m) {
     const batch = writeBatch(db);
     batch.delete(doc(chatMsgs(t), m.id));
@@ -569,11 +589,52 @@ const Dms = {
   },
 };
 
+// ---------------- menções (@nick) ----------------
+// Quem manda a mensagem deixa um aviso na caixa de cada pessoa marcada; cada um só lê e apaga a sua.
+function pingFrom(snap) {
+  const d = snap.data({ serverTimestamps: 'estimate' });
+  return {
+    id: snap.id, from: d.from || '', name: d.name || '', gid: d.gid || '', cid: d.cid || '',
+    ch: d.ch || '', text: String(d.text || ''), at: millis(d.at) || Date.now(),
+  };
+}
+const pingsCol = (uid) => collection(db, 'pings', uid, 'items');
+const Pings = {
+  // Minhas menções mais novas, ao vivo.
+  watch(cb, onError) {
+    const { uid } = whoAmI();
+    return onSnapshot(query(pingsCol(uid), orderBy('at', 'desc'), limit(30)),
+      (qs) => cb(qs.docs.map(pingFrom)), watchError('menções', onError));
+  },
+  // Avisa as pessoas marcadas numa mensagem do canal (até 10 por mensagem).
+  async send(gid, cid, chName, text, uids) {
+    const { uid, nick } = whoAmI();
+    const to = [...new Set(uids)].filter((u) => u && u !== uid).slice(0, 10);
+    if (!to.length) return;
+    const batch = writeBatch(db);
+    for (const u of to) {
+      batch.set(doc(pingsCol(u)), {
+        from: uid, name: nick, gid, cid, ch: oneLine(chName, 30) || 'canal',
+        text: String(text || '').replace(/\s+/g, ' ').trim().slice(0, 200), at: serverTimestamp(),
+      });
+    }
+    await batch.commit();
+  },
+  async clear(ids) {
+    const { uid } = whoAmI();
+    if (!ids.length) return;
+    const batch = writeBatch(db);
+    for (const id of ids.slice(0, 400)) batch.delete(doc(pingsCol(uid), id));
+    await batch.commit();
+  },
+};
+
 // ---------------- o que o app usa ----------------
 window.SPAuth = {
   groups: Groups,
   chat: Chat,
   dms: Dms,
+  pings: Pings,
   // Liga o Firebase. Resolve com o perfil atual (ou null) assim que souber se já tem alguém logado.
   init(opts = {}) {
     const app = initializeApp(CONFIG);
