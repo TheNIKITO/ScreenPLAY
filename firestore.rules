@@ -84,12 +84,14 @@ service cloud.firestore {
     }
 
     // Online/offline: cada um avisa que está com o app aberto (a cada 4 min) e que fechou.
+    // st: ausente ('idle') ou não perturbar ('dnd'); sem st = disponível. Invisível grava on: false.
     match /presence/{uid} {
       allow read: if signedIn();
       allow create, update: if signedIn() && request.auth.uid == uid
-        && request.resource.data.keys().hasOnly(['on', 'at'])
+        && request.resource.data.keys().hasOnly(['on', 'at', 'st'])
         && request.resource.data.on is bool
-        && request.resource.data.at == request.time;
+        && request.resource.data.at == request.time
+        && (!('st' in request.resource.data) || request.resource.data.st in ['idle', 'dnd']);
     }
 
     // Código de convite -> grupo. Quem tem o código acha o grupo; ninguém consegue listar os códigos.

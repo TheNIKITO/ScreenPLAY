@@ -2019,7 +2019,7 @@ function renderMembers() {
   const people = g.memberUids.map((uid) => {
     const st = memberStatus(uid);
     return {
-      uid, st, owner: uid === g.ownerUid, online: isOnline(uid) || !!st,
+      uid, st, owner: uid === g.ownerUid, online: isOnline(uid) || !!st, status: statusOf(uid),
       name: cleanName((g.members[uid] && g.members[uid].name) || 'Alguém'),
     };
   });
@@ -2053,8 +2053,9 @@ function memberEl(p) {
   wrap.appendChild(av);
   if (known) {
     const dot = document.createElement('span');
-    dot.className = 'dot' + (p.online ? ' on' : '');
-    dot.title = p.online ? 'Online' : 'Offline';
+    const s = p.online && (p.status === 'offline' || p.status === 'invisible') ? 'online' : p.status;   // numa sala = online
+    dot.className = dotClass(s);
+    dot.title = STATUS[s].label;
     wrap.appendChild(dot);
   }
   const text = document.createElement('div');
@@ -2847,6 +2848,7 @@ function onPings(list) {
   for (const p of list) {
     if (first || old.has(p.id) || !G.list.has(p.gid)) continue;
     if (viewingChannel(p.gid, p.cid) && document.hasFocus()) continue;   // já estou vendo: some sozinho
+    if (dnd()) continue;   // não perturbar: só o "@" na lista
     sfx('message');
     toast(`@ ${cleanName(p.name)} marcou você em #${p.ch}: ${p.text}`, 'msg', 7000, () => goToPing(p));
   }
@@ -3103,6 +3105,7 @@ function onDms(list) {
     const old = prev.get(d.id);
     if (old && old.last && old.last.at >= d.last.at) continue;
     if (M.t && M.t.did === d.id && G.view === 'chat' && document.hasFocus()) continue;
+    if (dnd()) continue;   // não perturbar: só a bolinha de não lida
     sfx('message');
     toast(`💬 ${dmOther(d).name}: ${d.last.text}`, 'msg', 6000, () => openDm(d.id, true));
   }
@@ -3167,7 +3170,9 @@ function renderDmList(box) {
     av.className = 'av';
     paintAv(av, o.uid, o.name);
     const dot = document.createElement('span');
-    dot.className = 'dot' + (isOnline(o.uid) ? ' on' : '');
+    const s = statusOf(o.uid);
+    dot.className = dotClass(s);
+    dot.title = STATUS[s].label;
     wrap.append(av, dot);
     const text = document.createElement('span');
     text.className = 'dm-text';
@@ -3201,9 +3206,12 @@ function openUserCard(uid, name, anchor, side) {
   $('ucName').className = fxClass(uid);
   $('ucCrown').classList.toggle('hidden', !(g && g.ownerUid === uid));
   const st = g ? memberStatus(uid) : null;
-  const online = isOnline(uid) || !!st;
-  $('ucDot').className = 'dot' + (online ? ' on' : '');
-  $('ucStatus').textContent = st ? (st.live ? `Transmitindo em ${st.room}` : `Em ${st.room}`) : online ? 'Online' : 'Offline';
+  let s = statusOf(uid);
+  if (st && s === 'offline') s = 'online';   // numa sala = online
+  $('ucDot').className = dotClass(s);
+  $('ucDot').title = STATUS[s].label;
+  $('ucStatus').textContent = st ? (st.live ? `Transmitindo em ${st.room}` : `Em ${st.room}`)
+    : s === 'online' ? 'Online' : STATUS[s].label;
   $('ucForm').classList.toggle('hidden', me);
   $('ucEdit').classList.toggle('hidden', !me);
   $('ucMsg').value = '';
@@ -3515,9 +3523,22 @@ function openMenu(items, x, y, anchor) {
     b.type = 'button';
     b.setAttribute('role', 'menuitem');
     if (it.danger) b.className = 'danger';
-    b.innerHTML = svg(it.icon, 16);
+    if (it.sel) b.classList.add('sel');
+    if ('dot' in it) {
+      const d = document.createElement('span');
+      d.className = 'sdot ' + it.dot;
+      b.appendChild(d);
+    } else {
+      b.innerHTML = svg(it.icon, 16);
+    }
     const t = document.createElement('span');
     t.textContent = it.label;
+    if (it.sub) {
+      t.className = 'mtext';
+      t.textContent = '';
+      t.appendChild(document.createElement('b')).textContent = it.label;
+      t.appendChild(document.createElement('small')).textContent = it.sub;
+    }
     b.appendChild(t);
     b.onclick = () => { closeMenu(); it.run(); };
     m.appendChild(b);
@@ -3530,6 +3551,7 @@ function openMenu(items, x, y, anchor) {
 }
 function closeMenu() {
   $('menu').classList.add('hidden');
+  $('menu').classList.remove('status-menu');
   if (menuAnchor) menuAnchor.classList.remove('open');
   menuAnchor = null;
 }
@@ -3900,15 +3922,122 @@ async function changeMyPhoto() {
 $('pfAv').onclick = changeMyPhoto;
 $('pfPhoto').onclick = changeMyPhoto;
 $('pfRemove').onclick = () => saveMine({ photo: '' }, 'Foto de perfil removida.');
-$('meAv').onclick = () => openSettings('perfil');
-document.querySelector('.user-panel .me-text').onclick = () => openSettings('perfil');
+// Clicar em mim no rodapé: menu de status (igual ao Discord) + editar perfil.
+function openStatusMenu() {
+  const anchor = $('meBtn');
+  if (menuOpen() && menuAnchor === anchor) { closeMenu(); return; }
+  const cur = MY.choice;
+  const items = ['online', 'idle', 'dnd', 'invisible'].map((k) => ({
+    dot: STATUS[k].dot, label: STATUS[k].label, sub: STATUS[k].sub, sel: k === cur, run: () => setMyStatus(k),
+  }));
+  if (MY.auto && cur === 'online') items[1].sub = 'Automático: o PC está parado';
+  items.push('-', { icon: ICON.pencil, label: 'Editar perfil', run: () => openSettings('perfil') });
+  const r = anchor.getBoundingClientRect();
+  openMenu(items, r.left, r.top, anchor);
+  const m = $('menu');
+  m.classList.add('status-menu');
+  m.style.top = Math.max(8, r.top - m.offsetHeight - 8) + 'px';
+}
+$('meBtn').onclick = openStatusMenu;
 
 // ---------------- online / offline ----------------
 // Com o app aberto, cada um avisa no Firebase a cada 4 min; ao fechar o app ou sair da conta, avisa
 // que saiu. Quem parou de avisar há mais de 9 min (PC desligou, app travou) aparece offline.
 const PRESENCE_BEAT = 4 * 60 * 1000;
 const PRESENCE_FRESH = 9 * 60 * 1000;
-const PR = { map: new Map(), subs: new Map(), timer: null, uid: '', denied: false, raf: 0 };
+const PR = { map: new Map(), subs: new Map(), timer: null, uid: '', denied: false, raf: 0, noSt: false, sent: '' };
+
+// Meu status, igual ao Discord: escolhido no menu do meu perfil (fica salvo neste PC) + ausente
+// automático quando o PC fica parado (sem mexer no mouse/teclado) por IDLE_SECS ou com a tela bloqueada.
+const IDLE_SECS = 10 * 60;
+const STATUS = {
+  online:    { label: 'Disponível', short: 'Online', dot: 'on' },
+  idle:      { label: 'Ausente', short: 'Ausente', dot: 'idle' },
+  dnd:       { label: 'Não perturbar', short: 'Não perturbar', dot: 'dnd',
+               sub: 'Você não vai receber avisos nem sons de mensagens' },
+  invisible: { label: 'Invisível', short: 'Invisível', dot: 'inv', sub: 'Você vai aparecer offline' },
+  offline:   { label: 'Offline', short: 'Offline', dot: '' },
+};
+const MY = {
+  choice: ['idle', 'dnd', 'invisible'].includes(store('sp-status')) ? store('sp-status') : 'online',
+  auto: false,      // PC parado agora
+  timer: null,
+  lastInput: Date.now(),
+};
+// O que os outros (e eu) vemos: invisível > não perturbar > ausente (escolhido ou automático) > disponível.
+function myStatus() {
+  if (MY.choice !== 'online') return MY.choice;
+  return MY.auto ? 'idle' : 'online';
+}
+function setMyStatus(choice) {
+  if (!STATUS[choice] || choice === 'offline') return;
+  MY.choice = choice;
+  store('sp-status', choice);
+  onMyStatus();
+}
+function onMyStatus() {
+  paintMyStatus();
+  sendPresence();
+  renderMembersSoon();
+}
+function paintMyStatus() {
+  const s = myStatus();
+  const dot = $('meDot');
+  dot.className = dotClass(s);
+  dot.title = STATUS[s].label;
+  $('meStatus').textContent = STATUS[s].short;
+}
+function dotClass(s) {
+  return 'dot' + (STATUS[s] && STATUS[s].dot ? ' ' + STATUS[s].dot : '');
+}
+// Status de qualquer um: online | idle | dnd | offline (o meu pode ser invisible).
+function statusOf(uid) {
+  if (uid && uid === PR.uid) return myStatus();
+  const st = presenceOf(uid);
+  if (!(st && st.on && Date.now() - st.at < PRESENCE_FRESH)) return 'offline';
+  return st.st === 'idle' || st.st === 'dnd' ? st.st : 'online';
+}
+const dnd = () => !!PR.uid && myStatus() === 'dnd';
+// Confere se o PC está parado (a cada 20 s). No navegador (sem o app) vale o mouse/teclado nesta página.
+async function checkIdle() {
+  let idle = false;
+  if (IS_APP && window.tav.idleState) {
+    try { idle = (await window.tav.idleState(IDLE_SECS)) !== 'active'; } catch { idle = false; }
+  } else {
+    idle = Date.now() - MY.lastInput > IDLE_SECS * 1000;
+  }
+  if (idle === MY.auto || !PR.uid) return;
+  MY.auto = idle;
+  if (MY.choice === 'online') onMyStatus();
+}
+for (const ev of ['mousemove', 'keydown', 'mousedown', 'wheel']) {
+  addEventListener(ev, () => {
+    MY.lastInput = Date.now();
+    if (MY.auto && !IS_APP) checkIdle();
+  }, { passive: true, capture: true });
+}
+// Avisa o Firebase agora (mudou o status) ou no "estou aqui" de 4 em 4 min.
+function sendPresence(force) {
+  if (!PR.uid || !window.SPAuth || !window.SPAuth.profile()) return;
+  const s = myStatus();
+  const on = s !== 'invisible';
+  const st = PR.noSt || !on || s === 'online' ? '' : s;
+  const key = `${on}|${st}`;
+  if (!force && key === PR.sent) return;
+  PR.sent = key;
+  window.SPAuth.setPresence(on, st).catch((err) => {
+    if (!(err && err.code === 'permission-denied')) return;
+    if (st && !PR.noSt) {
+      // Regras antigas no Firebase (sem "st"): continua avisando só online/offline.
+      PR.noSt = true;
+      PR.sent = '';
+      sendPresence(true);
+      return;
+    }
+    PR.denied = true;
+    renderMembersSoon();
+  });
+}
 
 function presenceOf(uid) {
   if (!uid) return null;
@@ -3922,26 +4051,25 @@ function presenceOf(uid) {
   return PR.map.get(uid) || null;
 }
 function isOnline(uid) {
-  if (uid && uid === PR.uid) return true;   // eu, com o app aberto
-  const st = presenceOf(uid);
-  return !!(st && st.on && Date.now() - st.at < PRESENCE_FRESH);
+  const s = statusOf(uid);
+  return s !== 'offline' && s !== 'invisible';
 }
 function startPresence(uid) {
   if (PR.uid === uid && PR.timer) return;
   stopPresence();
   PR.uid = uid;
-  const beat = () => {
-    window.SPAuth.setPresence(true).catch((err) => {
-      if (err && err.code === 'permission-denied') { PR.denied = true; renderMembersSoon(); }
-    });
-  };
-  beat();
-  PR.timer = setInterval(beat, PRESENCE_BEAT);
+  sendPresence(true);
+  PR.timer = setInterval(() => sendPresence(true), PRESENCE_BEAT);
+  MY.timer = setInterval(checkIdle, 20 * 1000);
+  checkIdle();
+  paintMyStatus();
 }
 function stopPresence() {
   clearInterval(PR.timer);
+  clearInterval(MY.timer);
   for (const unsub of PR.subs.values()) { try { unsub(); } catch {} }
-  Object.assign(PR, { map: new Map(), subs: new Map(), timer: null, uid: '', denied: false });
+  Object.assign(PR, { map: new Map(), subs: new Map(), timer: null, uid: '', denied: false, noSt: false, sent: '' });
+  Object.assign(MY, { auto: false, timer: null });
 }
 // Avisa "offline" (sair da conta, fechar o app, reiniciar pra atualizar). Espera no máximo `ms`.
 function goOffline(ms = 1200) {

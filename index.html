@@ -644,9 +644,34 @@
   .mem-status svg { flex: none; }
   .mem-status.live { color: var(--live); }
   .av-wrap { position: relative; flex: none; display: inline-grid; }
-  .dot { position: absolute; right: -2px; bottom: -2px; width: 14px; height: 14px; border-radius: 50%; border: 3px solid var(--panel); background: var(--faint); }
-  .dot.on { background: var(--good); }
-  .user-panel .dot { border-color: color-mix(in srgb, var(--panel) 55%, var(--bg)); }
+  .dot {
+    --ring: var(--panel);
+    position: absolute; right: -2px; bottom: -2px; width: 14px; height: 14px; border-radius: 50%; border: 3px solid var(--ring); background: var(--faint);
+  }
+  /* Status igual ao Discord: verde, lua amarela, vermelho com traço, cinza vazado. */
+  .dot.on, .sdot.on { background: var(--good); }
+  .dot.idle, .sdot.idle { background: radial-gradient(circle at 20% 20%, var(--ring) 0 38%, var(--warn) 40%); }
+  .dot.dnd, .sdot.dnd { background: linear-gradient(var(--ring), var(--ring)) center / 58% 24% no-repeat, var(--bad); }
+  .dot.inv, .sdot.inv { background: radial-gradient(circle, var(--ring) 0 34%, var(--faint) 37%); }
+  .user-panel .dot { --ring: color-mix(in srgb, var(--panel) 55%, var(--bg)); }
+  .me-btn {
+    display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; margin: -4px 0 -4px -4px; padding: 4px;
+    border: 0; border-radius: 8px; background: transparent; color: var(--text); font: inherit; text-align: left; cursor: pointer;
+  }
+  .me-btn:hover, .me-btn.open { background: var(--panel-2); }
+  .me-btn:hover .dot, .me-btn.open .dot { --ring: var(--panel-2); }
+  .sdot { --ring: var(--panel-3); flex: none; width: 12px; height: 12px; border-radius: 50%; background: var(--faint); }
+  .menu button:hover .sdot { --ring: var(--accent); }
+  .status-menu { width: 270px; }
+  .status-menu button { align-items: flex-start; }
+  .status-menu button .sdot { margin-top: 3px; }
+  .status-menu button svg { margin-top: 1px; }
+  .menu .mtext { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .menu .mtext b { font-weight: 600; }
+  .menu .mtext small { font-size: 12px; color: var(--muted); }
+  .menu button:hover .mtext small { color: inherit; opacity: .85; }
+  .status-menu button.sel { background: color-mix(in srgb, var(--text) 8%, transparent); }
+  .status-menu button.sel:hover { background: var(--accent); }
   .members-toggle.on { background: var(--panel-2); color: var(--text); }
 
   /* ---------- Chat: links, anexos, soltar arquivos ---------- */
@@ -709,7 +734,7 @@
   }
   .chan.dm { gap: 10px; padding: 6px 8px; }
   .chan.dm .av { width: 32px; height: 32px; font-size: 13px; }
-  .chan.dm .dot { border-color: var(--panel); }
+  .chan.dm .dot { --ring: var(--panel); }
   .dm-text { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   .dm-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .dm-last { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--faint); }
@@ -730,7 +755,7 @@
   .uc-body { display: flex; flex-direction: column; gap: 8px; margin-top: -38px; padding: 0 16px 16px; }
   .uc-avw { align-self: flex-start; }
   .uc-av { width: 76px; height: 76px; border: 5px solid var(--panel-2); font-size: 30px; }
-  .uc-avw .dot { right: 2px; bottom: 2px; width: 18px; height: 18px; border-width: 4px; border-color: var(--panel-2); }
+  .uc-avw .dot { --ring: var(--panel-2); right: 2px; bottom: 2px; width: 18px; height: 18px; border-width: 4px; }
   .uc-name { display: flex; align-items: center; gap: 6px; min-width: 0; }
   .uc-name b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 18px; }
   .uc-status { font-size: 13px; color: var(--muted); }
@@ -761,7 +786,6 @@
   .fx-opt.sel { border-color: var(--accent); }
   .fx-sample { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 16px; font-weight: 700; }
   .fx-opt small { font-size: 12px; font-weight: 600; color: var(--muted); }
-  .user-panel .av, .user-panel .me-text { cursor: pointer; }
 
   /* Configurações do grupo */
   .gs-photo { display: flex; align-items: center; gap: 16px; margin-bottom: 16px; }
@@ -924,8 +948,10 @@
     </div>
 
     <div class="user-panel">
-      <span class="av-wrap"><span id="meAv" class="av"></span><span class="dot on" title="Online"></span></span>
-      <span class="me-text"><b id="meName"></b><small>Online</small></span>
+      <button id="meBtn" class="me-btn" type="button" title="Mudar status" aria-haspopup="menu">
+        <span class="av-wrap"><span id="meAv" class="av"></span><span id="meDot" class="dot on" title="Disponível"></span></span>
+        <span class="me-text"><b id="meName"></b><small id="meStatus">Online</small></span>
+      </button>
       <button class="gear-btn" type="button" data-settings title="Configurações" aria-label="Configurações"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg></button>
     </div>
   </aside>

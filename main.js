@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, desktopCapturer, dialog, ipcMain, powerSaveBlocker, screen, session, shell } = require('electron');
+const { app, BrowserWindow, Menu, desktopCapturer, dialog, ipcMain, powerMonitor, powerSaveBlocker, screen, session, shell } = require('electron');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
@@ -291,6 +291,13 @@ function registerIpc() {
   ipcMain.handle('tav:settings-get', () => getAppSettings());
   // Testes: TAV_FIREBASE_EMULATOR=127.0.0.1 usa o Firebase local (emulador) em vez do de verdade.
   ipcMain.handle('tav:dev-flags', () => ({ emulator: process.env.TAV_FIREBASE_EMULATOR || '' }));
+  // Ausente automático: se o PC está parado (sem mouse/teclado) há `secs` segundos, ou com a tela bloqueada.
+  ipcMain.handle('tav:idle-state', (_e, secs) => {
+    const s = Math.max(60, Math.min(3600, Number(secs) || 600));
+    // TAV_IDLE_TEST=1 nos testes: finge que o PC está parado.
+    if (process.env.TAV_IDLE_TEST === '1') return 'idle';
+    try { return powerMonitor.getSystemIdleState(s); } catch { return 'unknown'; }
+  });
   ipcMain.handle('tav:settings-set', (_e, patch) => setAppSettings(patch || {}));
 
   // "Procurar atualização agora" (Configurações → Sobre). Se tiver, baixa em segundo plano e o

@@ -5,7 +5,7 @@
 //   usernames/{nick em minúsculas} -> { uid, name }   reserva do nick (garante que é único)
 //   users/{uid}                    -> { name, nameLower }
 //   profiles/{uid}                 -> { photo, fx }   foto (data URL pequena) e efeito no nome
-//   presence/{uid}                 -> { on, at }      online/offline (o app avisa a cada 4 min e ao fechar)
+//   presence/{uid}                 -> { on, at, st }  online/offline (o app avisa a cada 4 min e ao fechar); st = '' | 'idle' | 'dnd'
 //   invites/{código}               -> { gid }   convite de um grupo
 //   groups/{gid}                   -> { name, photo, ownerUid, invite, memberUids, members: {uid: {name, via}}, createdAt }
 //     channels/{cid}               -> { name, type: 'text' | 'stream', pos }
@@ -721,16 +721,20 @@ window.SPAuth = {
       (snap) => cb(profileFrom(snap.exists() ? snap.data() : null)),
       () => cb(profileFrom(null)));
   },
-  // Online/offline de qualquer conta, ao vivo. cb({ on, at, pending }) — ou cb(null, erro).
+  // Online/offline de qualquer conta, ao vivo. cb({ on, at, st, pending }) — ou cb(null, erro).
+  // st: '' (disponível), 'idle' (ausente) ou 'dnd' (não perturbar). Invisível = on: false.
   watchPresence(uid, cb) {
     return onSnapshot(doc(db, 'presence', uid), (snap) => {
       const d = snap.exists() ? snap.data({ serverTimestamps: 'estimate' }) : null;
-      cb({ on: !!(d && d.on), at: d ? millis(d.at) : 0, pending: snap.metadata.hasPendingWrites });
+      const st = d && (d.st === 'idle' || d.st === 'dnd') ? d.st : '';
+      cb({ on: !!(d && d.on), at: d ? millis(d.at) : 0, st, pending: snap.metadata.hasPendingWrites });
     }, (err) => cb(null, err));
   },
-  async setPresence(on) {
+  async setPresence(on, st = '') {
     const { uid } = whoAmI();
-    await setDoc(doc(db, 'presence', uid), { on: !!on, at: serverTimestamp() });
+    const data = { on: !!on, at: serverTimestamp() };
+    if (st === 'idle' || st === 'dnd') data.st = st;
+    await setDoc(doc(db, 'presence', uid), data);
   },
   // Muda o meu perfil: { photo } e/ou { fx }.
   async saveProfile(patch) {

@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('tav', {
   presence: (state) => ipcRenderer.send('tav:presence', state),
   settingsGet: () => ipcRenderer.invoke('tav:settings-get'),
   devFlags: () => ipcRenderer.invoke('tav:dev-flags'),
+  idleState: (secs) => ipcRenderer.invoke('tav:idle-state', secs),
   settingsSet: (patch) => ipcRenderer.invoke('tav:settings-set', patch),
   checkUpdate: () => ipcRenderer.invoke('tav:check-update'),
   openReleases: () => ipcRenderer.send('tav:open-releases'),
