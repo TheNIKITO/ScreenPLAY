@@ -2017,9 +2017,11 @@ function renderMembers() {
   const keep = box.scrollTop;
   box.textContent = '';
   const people = g.memberUids.map((uid) => {
-    const st = memberStatus(uid);
+    const room = memberStatus(uid);
+    const status = shownStatus(uid, room);
+    const online = status !== 'offline' && status !== 'invisible';
     return {
-      uid, st, owner: uid === g.ownerUid, online: isOnline(uid) || !!st, status: statusOf(uid),
+      uid, st: online || uid === PR.uid ? room : null, owner: uid === g.ownerUid, online, status,
       name: cleanName((g.members[uid] && g.members[uid].name) || 'Alguém'),
     };
   });
@@ -2053,7 +2055,7 @@ function memberEl(p) {
   wrap.appendChild(av);
   if (known) {
     const dot = document.createElement('span');
-    const s = p.online && (p.status === 'offline' || p.status === 'invisible') ? 'online' : p.status;   // numa sala = online
+    const s = p.status;
     dot.className = dotClass(s);
     dot.title = STATUS[s].label;
     wrap.appendChild(dot);
@@ -3206,11 +3208,10 @@ function openUserCard(uid, name, anchor, side) {
   $('ucName').className = fxClass(uid);
   $('ucCrown').classList.toggle('hidden', !(g && g.ownerUid === uid));
   const st = g ? memberStatus(uid) : null;
-  let s = statusOf(uid);
-  if (st && s === 'offline') s = 'online';   // numa sala = online
+  const s = shownStatus(uid, st);
   $('ucDot').className = dotClass(s);
   $('ucDot').title = STATUS[s].label;
-  $('ucStatus').textContent = st ? (st.live ? `Transmitindo em ${st.room}` : `Em ${st.room}`)
+  $('ucStatus').textContent = st && s !== 'offline' ? (st.live ? `Transmitindo em ${st.room}` : `Em ${st.room}`)
     : s === 'online' ? 'Online' : STATUS[s].label;
   $('ucForm').classList.toggle('hidden', me);
   $('ucEdit').classList.toggle('hidden', !me);
@@ -3996,6 +3997,15 @@ function statusOf(uid) {
   const st = presenceOf(uid);
   if (!(st && st.on && Date.now() - st.at < PRESENCE_FRESH)) return 'offline';
   return st.st === 'idle' || st.st === 'dnd' ? st.st : 'online';
+}
+// Status mostrado na lista/cartão: quem está numa sala conta como online (mesmo com app antigo ou sem
+// as regras novas), MENOS quem escolheu Invisível (avisa "offline" de 4 em 4 min mesmo com o app aberto).
+function shownStatus(uid, room) {
+  const s = statusOf(uid);
+  if (!room || s !== 'offline') return s;
+  const p = PR.map.get(uid);
+  if (p && !p.on && Date.now() - p.at < PRESENCE_FRESH) return 'offline';
+  return 'online';
 }
 const dnd = () => !!PR.uid && myStatus() === 'dnd';
 // Confere se o PC está parado (a cada 20 s). No navegador (sem o app) vale o mouse/teclado nesta página.
